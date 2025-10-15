@@ -1,0 +1,5 @@
+MONGODB_URI=mongodb+srv://<user>:<pass>@animal-cluster.xxxxx.mongodb.net/?retryWrites=true&w=majority
+JWT_SECRET=super_secret_change_me
+INVITE_CODE=admin123
+MONGODB_URI="mongodb+srv://seungbeom:Animal1234!@animal-cluster.bm3p7bu.mongodb.net/?retryWrites=true&w=majority&appName=animal-cluster"
+PORT=3000
