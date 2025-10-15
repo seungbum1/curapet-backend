@@ -107,6 +107,7 @@ const uploadLimiter = rateLimit({
 function issueToken(doc) {
   return jwt.sign({ uid: doc._id, role: doc.role }, JWT_SECRET, { expiresIn: '7d' });
 }
+
 function buildBaseUrl(req) {
   // PUBLIC_BASE_URL 우선, 없으면 프록시 헤더 고려
   if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
@@ -114,10 +115,12 @@ function buildBaseUrl(req) {
   const host  = req.get('x-forwarded-host') || req.get('host');
   return `${proto}://${host}`;
 }
+
 function publicUrl(req, relativePath) {
   const base = buildBaseUrl(req);
   return `${base}${relativePath.startsWith('/') ? '' : '/'}${relativePath}`;
 }
+
 function auth(req, res, next) {
   try {
     const h = req.headers.authorization || '';
@@ -129,6 +132,45 @@ function auth(req, res, next) {
     res.status(401).json({ message: 'invalid token' });
   }
 }
+
+// ─────────────── 알림 유틸 ───────────────
+async function pushNotificationOne({ userId, hospitalId, hospitalName = '', type, title, message, meta = {} }) {
+  try {
+    if (!userId || !hospitalId) return;
+    await Notification.create({
+      userId: oid(userId),
+      hospitalId: oid(hospitalId),
+      hospitalName: hospitalName || '',
+      type: (type || 'SYSTEM').toString(),
+      title: (title || '').toString(),
+      message: (message || '').toString(),
+      meta,
+    });
+  } catch (e) {
+    console.error('pushNotificationOne error:', e?.message || e);
+  }
+}
+
+async function pushNotificationMany({ userIds = [], hospitalId, hospitalName = '', type, title, message, meta = {} }) {
+  try {
+    const docs = (userIds || []).filter(Boolean).map(u => ({
+      userId: oid(u),
+      hospitalId: oid(hospitalId),
+      hospitalName: hospitalName || '',
+      type: (type || 'SYSTEM').toString(),
+      title: (title || '').toString(),
+      message: (message || '').toString(),
+      meta,
+      createdAt: new Date(),
+    }));
+    if (docs.length) await Notification.insertMany(docs, { ordered: false });
+  } catch (e) {
+    console.error('pushNotificationMany error:', e?.message || e);
+  }
+}
+
+
+
 const onlyUser = (req, res, next) =>
   req.jwt?.role === 'USER' ? next() : res.status(403).json({ message: 'for USER' });
 const onlyHospitalAdmin = (req, res, next) =>
@@ -280,6 +322,24 @@ const sosLogSchema = new mongoose.Schema({
   message:      { type: String, default: '' },
 }, { timestamps: true });
 
+// ─────────────── 알림 스키마 ───────────────
+const notificationSchema = new mongoose.Schema({
+  userId:       { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  hospitalName: { type: String, default: '' },
+
+  // 유형: APPOINTMENT_APPROVED, APPOINTMENT_REJECTED, PET_CARE_POSTED,
+  //       MEDICAL_HISTORY_ADDED, SOS_ALERT, SYSTEM 등
+  type:         { type: String, default: 'SYSTEM', index: true },
+  title:        { type: String, default: '' },
+  message:      { type: String, default: '' },
+
+  read:         { type: Boolean, default: false, index: true },
+  meta:         { type: mongoose.Schema.Types.Mixed, default: {} }, // 필요하면 상세정보
+
+  createdAt:    { type: Date, default: Date.now, index: true },
+}, { versionKey: false });
+
 // ─────────────── 모델 등록 ───────────────
 const User                = userConn.model('User', userSchema, 'users');
 const HospitalUser        = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
@@ -290,6 +350,8 @@ const MedicalHistory      = hospitalConn.model('MedicalHistory', medicalHistoryS
 const UserAppointment     = userConn.model('UserAppointment', userAppointmentSchema, 'user_appointments');
 const PetCare             = hospitalConn.model('PetCare', petCareSchema, 'pet_care');
 const SosLog = hospitalConn.model('SosLog', sosLogSchema, 'sos_logs');
+const Notification = userConn.model('Notification', notificationSchema, 'notifications');
+
 
 
 // ─────────────── 헬스 & 루트 ───────────────
@@ -649,6 +711,17 @@ app.post('/api/hospital-admin/medical-histories', auth, onlyHospitalAdmin, async
       howToTake: (howToTake || '').trim(),
       cost: (cost || '').trim(),
     });
+
+    await pushNotificationOne({
+      userId: userId,
+      hospitalId: hid,
+      hospitalName: hName,
+      type: 'MEDICAL_HISTORY_ADDED',
+      title: '새 진료 내역 등록',
+      message: `${(category || '진료')} · ${new Date(date).toLocaleDateString()}`,
+      meta: { medicalHistoryId: doc._id }
+    });
+
     const created = doc.toJSON();
     return res.status(201).json({ data: { ...created, id: created._id } });
   } catch (e) { console.error('POST histories error:', e); return res.status(500).json({ message: 'server error' }); }
@@ -728,6 +801,22 @@ app.post('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, uploadLimiter,
       images: urls,
     });
     const created = doc.toJSON();
+
+    // 이 병원과 연동(APPROVED)된 모든 사용자에게 알림
+    const approvedUsers = await User.find({
+      linkedHospitals: { $elemMatch: { hospitalId: oid(req.jwt.uid), status: 'APPROVED' } }
+    }).select('_id').lean();
+
+    await pushNotificationMany({
+      userIds: approvedUsers.map(u => u._id),
+      hospitalId: oid(req.jwt.uid),
+      hospitalName: admin.hospitalName || '',
+      type: 'PET_CARE_POSTED',
+      title: '새 반려 일지가 올라왔어요',
+      message: memo ? memo.slice(0, 80) : '이미지/메모가 등록되었습니다.',
+      meta: { petCareId: doc._id, imageUrl: urls[0] || '' }
+    });
+
     return res.status(201).json({
       data: {
         _id: created._id,
@@ -968,6 +1057,18 @@ app.post('/api/hospital-admin/appointments/:id/approve', auth, onlyHospitalAdmin
     appt.decidedBy = oid(req.jwt.uid);
     await appt.save();
     await UserAppointment.updateOne({ originAppointmentId: appt._id }, { $set: { status: 'APPROVED' } });
+
+// ✅ pushNotificationOne 추가 (return 전에)
+await pushNotificationOne({
+  userId: appt.userId,
+  hospitalId: appt.hospitalId,
+  hospitalName: appt.hospitalName || '',
+  type: 'APPOINTMENT_APPROVED',
+  title: '진료 예약 승인',
+  message: `${appt.date} ${appt.time} · ${appt.service} (${appt.doctorName || '담당의'})`,
+  meta: { appointmentId: appt._id }
+});
+
     res.json({ ok: true });
   } catch (e) { console.error('approve appt error:', e); res.status(500).json({ message: 'server error' }); }
 });
@@ -983,6 +1084,18 @@ app.post('/api/hospital-admin/appointments/:id/reject', auth, onlyHospitalAdmin,
     appt.decidedBy = oid(req.jwt.uid);
     await appt.save();
     await UserAppointment.updateOne({ originAppointmentId: appt._id }, { $set: { status: 'REJECTED' } });
+// 거절 처리 부분도 동일하게 res.json 전에
+await pushNotificationOne({
+  userId: appt.userId,
+  hospitalId: appt.hospitalId,
+  hospitalName: appt.hospitalName || '',
+  type: 'APPOINTMENT_REJECTED',
+  title: '진료 예약 거절',
+  message: `${appt.date} ${appt.time} · ${appt.service}`,
+  meta: { appointmentId: appt._id }
+});
+
+
     res.json({ ok: true });
   } catch (e) { console.error('reject appt error:', e); res.status(500).json({ message: 'server error' }); }
 });
@@ -1047,12 +1160,87 @@ app.post('/api/hospital-admin/sos', auth, onlyHospitalAdmin, async (req, res) =>
       message: (message || '').toString(),
     });
 
+await pushNotificationOne({
+  userId: user._id,
+  hospitalId: hid,
+  hospitalName,
+  type: 'SOS_ALERT',
+  title: '병원 긴급 알림',
+  message: (message || '').toString(),
+  meta: { sosId: log._id }
+});
+
+
     // TODO: 문자/알림 연동 (Twilio/알리고/FCM 등)
     return res.status(201).json({ ok: true, id: log._id });
   } catch (e) {
     console.error('POST /api/hospital-admin/sos error:', e);
     return res.status(500).json({ message: 'server error' });
   }
+});
+
+// ─────────────── 사용자 알림 API ───────────────
+
+// 미확인 개수
+app.get('/api/users/me/notifications/unread-count', auth, onlyUser, async (req, res) => {
+  try {
+    const q = { userId: oid(req.jwt.uid), read: false };
+    if (req.query.hospitalId) q.hospitalId = oid(req.query.hospitalId);
+    const count = await Notification.countDocuments(q);
+    res.json({ count });
+  } catch (e) { console.error('unread-count error:', e); res.status(500).json({ message: 'server error' }); }
+});
+
+// 목록 (커서 기반: _id 기준 내림차순)
+app.get('/api/users/me/notifications', auth, onlyUser, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '20', 10), 100);
+    const q = { userId: oid(req.jwt.uid) };
+    if (req.query.hospitalId) q.hospitalId = oid(req.query.hospitalId);
+    if (req.query.cursor) q._id = { $lt: oid(req.query.cursor) };
+
+    const items = await Notification.find(q).sort({ _id: -1 }).limit(limit).lean();
+    const nextCursor = items.length === limit ? String(items[items.length - 1]._id) : null;
+
+    const data = items.map(n => ({
+      id: n._id,
+      type: n.type,
+      title: n.title || '',
+      message: n.message || '',
+      createdAt: n.createdAt,
+      read: !!n.read,
+      hospitalId: n.hospitalId,
+      hospitalName: n.hospitalName || '',
+      meta: n.meta || {},
+    }));
+    res.json({ data, nextCursor });
+  } catch (e) { console.error('list notifications error:', e); res.status(500).json({ message: 'server error' }); }
+});
+
+// 읽음 처리
+app.patch('/api/users/me/notifications/:id/read', auth, onlyUser, async (req, res) => {
+  try {
+    await Notification.updateOne({ _id: oid(req.params.id), userId: oid(req.jwt.uid) }, { $set: { read: true } });
+    res.status(204).send();
+  } catch (e) { console.error('read notif error:', e); res.status(500).json({ message: 'server error' }); }
+});
+
+// 모두 읽음
+app.post('/api/users/me/notifications/mark-all-read', auth, onlyUser, async (req, res) => {
+  try {
+    const q = { userId: oid(req.jwt.uid), read: false };
+    if (req.query.hospitalId) q.hospitalId = oid(req.query.hospitalId);
+    await Notification.updateMany(q, { $set: { read: true } });
+    res.status(204).send();
+  } catch (e) { console.error('mark-all-read error:', e); res.status(500).json({ message: 'server error' }); }
+});
+
+// 삭제(선택)
+app.delete('/api/users/me/notifications/:id', auth, onlyUser, async (req, res) => {
+  try {
+    await Notification.deleteOne({ _id: oid(req.params.id), userId: oid(req.jwt.uid) });
+    res.status(204).send();
+  } catch (e) { console.error('delete notif error:', e); res.status(500).json({ message: 'server error' }); }
 });
 
 
