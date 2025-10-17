@@ -355,6 +355,16 @@ const notificationSchema = new mongoose.Schema({
   createdAt:    { type: Date, default: Date.now, index: true },
 }, { versionKey: false });
 
+/* 병원 공지 스키마 */
+const hospitalNoticeSchema = new mongoose.Schema({
+  hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  hospitalName: { type: String, default: '' },
+  title:        { type: String, required: true },
+  content:      { type: String, required: true },
+  createdBy:    { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+}, { timestamps: true });
+
+
 // ─────────────── 모델 등록 ───────────────
 const User                = userConn.model('User', userSchema, 'users');
 const HospitalUser        = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
@@ -366,6 +376,7 @@ const UserAppointment     = userConn.model('UserAppointment', userAppointmentSch
 const PetCare             = hospitalConn.model('PetCare', petCareSchema, 'pet_care');
 const SosLog = hospitalConn.model('SosLog', sosLogSchema, 'sos_logs');
 const Notification = userConn.model('Notification', notificationSchema, 'notifications');
+const HospitalNotice = hospitalConn.model('HospitalNotice', hospitalNoticeSchema, 'hospital_notices');
 
 
 
@@ -941,6 +952,82 @@ app.post('/api/hospitals/:hospitalId/appointments/request', auth, onlyUser, asyn
     res.status(201).json({ ok: true, appointmentId: appt._id });
   } catch (e) { console.error('appointment request error:', e); res.status(500).json({ message: 'server error' }); }
 });
+
+// ─────────────── 병원관리자: 공지 목록/등록 ───────────────
+
+// GET /api/hospital-admin/notices?hospitalId=OPTIONAL
+// 플러터가 병원 ID를 넘길 수도 있어서 호환. 없으면 내 병원(req.jwt.uid)
+app.get('/api/hospital-admin/notices', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const hid = oid(req.query.hospitalId || req.jwt.uid);
+    const list = await HospitalNotice.find({ hospitalId: hid })
+      .sort({ createdAt: -1 })
+      .select('_id title content createdAt')  // 필요한 필드만
+      .lean();
+
+    // 플러터 파서가 배열/객체 둘 다 처리하므로 객체로 통일
+    return res.json({ data: list.map(n => ({
+      id: n._id,
+      _id: n._id,
+      title: n.title,
+      content: n.content,
+      createdAt: n.createdAt,
+    })) });
+  } catch (e) {
+    console.error('GET /api/hospital-admin/notices error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+});
+
+// POST /api/hospital-admin/notices
+// body: { title, content, hospitalId? }
+app.post('/api/hospital-admin/notices', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { title, content } = req.body || {};
+    const hid = oid(req.body?.hospitalId || req.jwt.uid);
+    if (!title || !content) return res.status(400).json({ message: 'title/content required' });
+
+    const h = await HospitalUser.findById(hid).lean();
+    const hospitalName = h?.hospitalName || '';
+
+    const doc = await HospitalNotice.create({
+      hospitalId: hid,
+      hospitalName,
+      title: String(title).trim(),
+      content: String(content).trim(),
+      createdBy: oid(req.jwt.uid),
+    });
+
+    // 이 병원과 연동(APPROVED)된 모든 사용자에게 알림
+    const approvedUsers = await User.find({
+      linkedHospitals: { $elemMatch: { hospitalId: hid, status: 'APPROVED' } }
+    }).select('_id').lean();
+
+    await pushNotificationMany({
+      userIds: approvedUsers.map(u => u._id),
+      hospitalId: hid,
+      hospitalName,
+      type: 'HOSPITAL_NOTICE',
+      title: `[공지] ${doc.title}`.slice(0, 40),
+      message: doc.content.slice(0, 120),
+      meta: { noticeId: doc._id }
+    });
+
+    return res.status(201).json({
+      data: {
+        id: doc._id,
+        _id: doc._id,
+        title: doc.title,
+        content: doc.content,
+        createdAt: doc.createdAt,
+      }
+    });
+  } catch (e) {
+    console.error('POST /api/hospital-admin/notices error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+});
+
 
 // ─────────────── 사용자 예약 조회/삭제/월간 ───────────────
 app.get('/api/users/me/appointments', auth, onlyUser, async (req, res) => {
