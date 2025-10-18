@@ -337,6 +337,25 @@ const sosLogSchema = new mongoose.Schema({
   message:      { type: String, default: '' },
 }, { timestamps: true });
 
+// ─────────────── Chat 스키마 ───────────────
+const chatMessageSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  userId:     { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+
+  // USER | ADMIN
+  senderRole: { type: String, enum: ['USER','ADMIN'], required: true, index: true },
+  senderId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  senderName: { type: String, default: '' },
+
+  text:       { type: String, required: true },
+  createdAt:  { type: Date, default: Date.now, index: true },
+
+  // 읽음표시: 수신자 기준으로 관리
+  readByUser:  { type: Boolean, default: false, index: true },   // 사용자가 읽음
+  readByAdmin: { type: Boolean, default: false, index: true },   // 관리자가 읽음
+}, { versionKey: false });
+chatMessageSchema.index({ hospitalId: 1, userId: 1, createdAt: -1 });
+
 // ─────────────── 알림 스키마 ───────────────
 const notificationSchema = new mongoose.Schema({
   userId:       { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
@@ -377,7 +396,7 @@ const PetCare             = hospitalConn.model('PetCare', petCareSchema, 'pet_ca
 const SosLog = hospitalConn.model('SosLog', sosLogSchema, 'sos_logs');
 const Notification = userConn.model('Notification', notificationSchema, 'notifications');
 const HospitalNotice = hospitalConn.model('HospitalNotice', hospitalNoticeSchema, 'hospital_notices');
-
+const ChatMessage = hospitalConn.model('ChatMessage', chatMessageSchema, 'chat_messages');
 
 
 // ─────────────── 헬스 & 루트 ───────────────
@@ -1028,6 +1047,163 @@ app.post('/api/hospital-admin/notices', auth, onlyHospitalAdmin, async (req, res
   }
 });
 
+// 병원(관리자) 요약: 의사/원장이름 등
+app.get('/api/hospitals/:hospitalId/admin/summary', async (req, res) => {
+  try {
+    const h = await HospitalUser.findById(oid(req.params.hospitalId)).lean();
+    if (!h) return res.status(404).json({ message: 'hospital not found' });
+    const doctorName = (h.hospitalProfile?.doctorName || h.name || '').trim() || '김철수 원장';
+    res.json({ doctorName });
+  } catch (e) {
+    console.error('admin summary error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+// ─────────────── USER ↔ ADMIN 1:1 채팅 (Admin 측) ───────────────
+
+// 스레드 목록: 최근 메시지 기준으로 사용자별 요약 + 안읽음 수
+app.get('/api/hospital-admin/chat/threads', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const hid = oid(req.jwt.uid);
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+
+    // 최근 메시지 1건씩 뽑기
+    const latest = await ChatMessage.aggregate([
+      { $match: { hospitalId: hid } },
+      { $sort: { createdAt: -1 } },
+      { $group: {
+          _id: '$userId',
+          lastMessage: { $first: '$$ROOT' }
+      }},
+      { $limit: limit }
+    ]);
+
+    // 안읽음 수 계산
+    const userIds = latest.map(x => x._id);
+    const unreadAgg = await ChatMessage.aggregate([
+      { $match: { hospitalId: hid, userId: { $in: userIds }, senderRole: 'USER', readByAdmin: false } },
+      { $group: { _id: '$userId', cnt: { $sum: 1 } } }
+    ]);
+    const unreadMap = new Map(unreadAgg.map(a => [String(a._id), a.cnt]));
+
+    // 사용자 이름 붙이기
+    const users = await User.find({ _id: { $in: userIds } }).select('name petProfile').lean();
+    const nameMap = new Map(users.map(u => [String(u._id), u.name || '사용자']));
+
+    const data = latest.map(x => ({
+      userId: String(x._id),
+      userName: nameMap.get(String(x._id)) || '사용자',
+      lastText: x.lastMessage.text,
+      lastAt:   x.lastMessage.createdAt,
+      unread:   unreadMap.get(String(x._id)) || 0,
+    }));
+
+    res.json({ data });
+  } catch (e) {
+    console.error('GET admin chat threads error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+// 특정 사용자와의 메시지 목록(증분)
+app.get('/api/hospital-admin/chat/messages', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ message: 'userId required' });
+
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const since = req.query.since ? new Date(String(req.query.since)) : null;
+
+    const q = { hospitalId: oid(req.jwt.uid), userId: oid(userId) };
+    if (since && !isNaN(since.getTime())) q.createdAt = { $gt: since };
+
+    const list = await ChatMessage.find(q).sort({ createdAt: 1 }).limit(limit).lean();
+    res.json(list.map(m => ({
+      _id: m._id,
+      senderRole: m.senderRole,
+      senderId: m.senderId,
+      senderName: m.senderName,
+      text: m.text,
+      createdAt: m.createdAt,
+    })));
+  } catch (e) {
+    console.error('GET admin chat messages error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+// 관리자 전송
+app.post('/api/hospital-admin/chat/send', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { userId, text } = req.body || {};
+    if (!userId || !text || !String(text).trim()) return res.status(400).json({ message: 'userId/text required' });
+
+    const admin = await HospitalUser.findById(oid(req.jwt.uid)).lean();
+    if (!admin) return res.status(404).json({ message: 'hospital not found' });
+
+    const user = await User.findById(oid(userId), { name:1 }).lean();
+    if (!user) return res.status(404).json({ message: 'user not found' });
+
+    // 연동 상태 확인
+    const ok = (user.linkedHospitals || []).some(h =>
+      String(h.hospitalId) === String(admin._id) && h.status === 'APPROVED'
+    );
+    if (!ok) return res.status(403).json({ message: 'link to user required (APPROVED)' });
+
+    const doc = await ChatMessage.create({
+      hospitalId: oid(req.jwt.uid),
+      userId: oid(userId),
+      senderRole: 'ADMIN',
+      senderId: oid(req.jwt.uid),
+      senderName: (admin.name || admin.hospitalName || '병원').trim(),
+      text: String(text),
+      readByUser: false,
+      readByAdmin: true,
+    });
+
+    // 사용자 알림
+    await pushNotificationOne({
+      userId: user._id,
+      hospitalId: oid(req.jwt.uid),
+      hospitalName: admin.hospitalName || '',
+      type: 'CHAT_ADMIN_TO_USER',
+      title: `${admin.hospitalName || '병원'} 메시지`,
+      message: String(text).slice(0, 80),
+      meta: { chatMessageId: doc._id }
+    });
+
+    res.status(201).json({
+      _id: doc._id,
+      senderRole: doc.senderRole,
+      senderId: doc.senderId,
+      senderName: doc.senderName,
+      text: doc.text,
+      createdAt: doc.createdAt,
+    });
+  } catch (e) {
+    console.error('POST admin chat send error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+// 읽음 처리(관리자가 해당 유저 채팅방 열었을 때)
+app.post('/api/hospital-admin/chat/read-all', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId) return res.status(400).json({ message: 'userId required' });
+
+    await ChatMessage.updateMany(
+      { hospitalId: oid(req.jwt.uid), userId: oid(userId), senderRole: 'USER', readByAdmin: false },
+      { $set: { readByAdmin: true } }
+    );
+    res.status(204).send();
+  } catch (e) {
+    console.error('POST admin chat read-all error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
 
 // ─────────────── 사용자 예약 조회/삭제/월간 ───────────────
 app.get('/api/users/me/appointments', auth, onlyUser, async (req, res) => {
@@ -1068,6 +1244,111 @@ app.get('/api/users/me/appointments', auth, onlyUser, async (req, res) => {
     res.json({ data: list, paging: { total, page, limit } });
   } catch (e) { console.error('get user appointments error:', e); res.status(500).json({ message: 'server error' }); }
 });
+
+// ─────────────── USER ↔ ADMIN 1:1 채팅 (User 측) ───────────────
+
+// 메시지 목록(증분)
+app.get('/api/hospitals/:hospitalId/chat/messages', auth, onlyUser, async (req, res) => {
+  try {
+    const hid = oid(req.params.hospitalId);
+    const me  = await User.findById(oid(req.jwt.uid), { linkedHospitals:1, name:1 }).lean();
+    if (!me) return res.status(404).json({ message: 'user not found' });
+
+    const linked = (me.linkedHospitals || []).find(x =>
+      String(x.hospitalId) === String(hid) && x.status === 'APPROVED'
+    );
+    if (!linked) return res.status(403).json({ message: 'link to hospital required (APPROVED)' });
+
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const since = req.query.since ? new Date(String(req.query.since)) : null;
+
+    const q = { hospitalId: hid, userId: oid(req.jwt.uid) };
+    if (since && !isNaN(since.getTime())) q.createdAt = { $gt: since };
+
+    const list = await ChatMessage.find(q).sort({ createdAt: 1 }).limit(limit).lean();
+    res.json(list.map(m => ({
+      _id: m._id,
+      senderRole: m.senderRole,
+      senderId: m.senderId,
+      senderName: m.senderName,
+      text: m.text,
+      createdAt: m.createdAt,
+    })));
+  } catch (e) {
+    console.error('GET user chat messages error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+// 전송
+app.post('/api/hospitals/:hospitalId/chat/send', auth, onlyUser, async (req, res) => {
+  try {
+    const hid = oid(req.params.hospitalId);
+    const { text } = req.body || {};
+    if (!text || !String(text).trim()) return res.status(400).json({ message: 'text required' });
+
+    const me = await User.findById(oid(req.jwt.uid), { name:1, linkedHospitals:1 }).lean();
+    if (!me) return res.status(404).json({ message: 'user not found' });
+
+    const linked = (me.linkedHospitals || []).find(x =>
+      String(x.hospitalId) === String(hid) && x.status === 'APPROVED'
+    );
+    if (!linked) return res.status(403).json({ message: 'link to hospital required (APPROVED)' });
+
+    const admin = await HospitalUser.findById(hid).lean();
+    if (!admin) return res.status(404).json({ message: 'hospital not found' });
+
+    const doc = await ChatMessage.create({
+      hospitalId: hid,
+      userId: oid(req.jwt.uid),
+      senderRole: 'USER',
+      senderId: oid(req.jwt.uid),
+      senderName: (me.name || '').trim() || '사용자',
+      text: String(text),
+      readByUser: true,      // 내가 보냈으니 사용자 읽음 true
+      readByAdmin: false,    // 상대(관리자)는 아직 안 읽음
+    });
+
+    // (선택) 관리자 알림 저장
+    await pushNotificationOne({
+      userId: null, // 관리자는 유저DB가 아니라 알림DB 분리 시 스킵
+      hospitalId: hid,
+      hospitalName: admin.hospitalName || '',
+      type: 'CHAT_USER_TO_ADMIN',
+      title: '새 채팅 도착',
+      message: String(text).slice(0, 80),
+      meta: { userId: req.jwt.uid, chatMessageId: doc._id }
+    });
+
+    res.status(201).json({
+      _id: doc._id,
+      senderRole: doc.senderRole,
+      senderId: doc.senderId,
+      senderName: doc.senderName,
+      text: doc.text,
+      createdAt: doc.createdAt,
+    });
+  } catch (e) {
+    console.error('POST user chat send error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+// 읽음 처리(사용자가 채팅방 열었을 때)
+app.post('/api/hospitals/:hospitalId/chat/read-all', auth, onlyUser, async (req, res) => {
+  try {
+    const hid = oid(req.params.hospitalId);
+    await ChatMessage.updateMany(
+      { hospitalId: hid, userId: oid(req.jwt.uid), senderRole: 'ADMIN', readByUser: false },
+      { $set: { readByUser: true } }
+    );
+    res.status(204).send();
+  } catch (e) {
+    console.error('POST user chat read-all error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
 
 app.delete('/api/users/me/appointments/:id', auth, onlyUser, async (req, res) => {
   try {
