@@ -1467,6 +1467,48 @@ await pushNotificationOne({
   } catch (e) { console.error('reject appt error:', e); res.status(500).json({ message: 'server error' }); }
 });
 
+// 관리자: 특정 사용자와의 채팅 메시지 목록(증분)
+app.get('/api/hospital-admin/chat/messages', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { userId } = req.query || {};
+    if (!userId) return res.status(400).json({ message: 'userId required' });
+
+    const hid = oid(req.jwt.uid);
+    const uid = oid(userId);
+    if (!hid || !uid) return res.status(400).json({ message: 'invalid id' });
+
+    // 사용자 존재/연동 확인
+    const user = await User.findById(uid, { linkedHospitals: 1, name: 1 }).lean();
+    if (!user) return res.status(404).json({ message: 'user not found' });
+    const linked = (user.linkedHospitals || []).some(h =>
+      String(h.hospitalId) === String(hid) && h.status === 'APPROVED'
+    );
+    if (!linked) return res.status(403).json({ message: 'link to user required (APPROVED)' });
+
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const since = req.query.since ? new Date(String(req.query.since)) : null;
+
+    const q = { hospitalId: hid, userId: uid };
+    if (since && !isNaN(since.getTime())) q.createdAt = { $gt: since };
+
+    const list = await ChatMessage.find(q).sort({ createdAt: 1 }).limit(limit).lean();
+
+    // 응답 포맷은 사용자측과 동일하게
+    return res.json(list.map(m => ({
+      _id: m._id,
+      senderRole: m.senderRole,
+      senderId: m.senderId,
+      senderName: m.senderName,
+      text: m.text,
+      createdAt: m.createdAt,
+    })));
+  } catch (e) {
+    console.error('GET admin chat messages error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+});
+
+
 // ─────────────── 사용자: 내 진료내역 ───────────────
 app.get('/api/users/me/medical-histories', auth, onlyUser, async (req, res) => {
   try {
