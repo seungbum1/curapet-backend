@@ -184,6 +184,59 @@ async function pushNotificationMany({ userIds = [], hospitalId, hospitalName = '
   }
 }
 
+// 공통 함수로 분리 (기존 /send 로직을 이 함수로 옮기면 재사용 쉬움)
+async function createAdminChatMessage(req, res) {
+  try {
+    const { userId, text } = req.body || {};
+    if (!userId || !text || !String(text).trim()) {
+      return res.status(400).json({ message: 'userId/text required' });
+    }
+
+    const admin = await HospitalUser.findById(oid(req.jwt.uid)).lean();
+    if (!admin) return res.status(404).json({ message: 'hospital not found' });
+
+    const user = await User.findById(oid(userId), { name:1, linkedHospitals:1 }).lean();
+    if (!user) return res.status(404).json({ message: 'user not found' });
+
+    const ok = (user.linkedHospitals || []).some(h =>
+      String(h.hospitalId) === String(admin._id) && h.status === 'APPROVED'
+    );
+    if (!ok) return res.status(403).json({ message: 'link to user required (APPROVED)' });
+
+    const doc = await ChatMessage.create({
+      hospitalId: oid(req.jwt.uid),
+      userId: oid(userId),
+      senderRole: 'ADMIN',
+      senderId: oid(req.jwt.uid),
+      senderName: (admin.name || admin.hospitalName || '병원').trim(),
+      text: String(text),
+      readByUser: false,
+      readByAdmin: true,
+    });
+
+    await pushNotificationOne({
+      userId: user._id,
+      hospitalId: oid(req.jwt.uid),
+      hospitalName: admin.hospitalName || '',
+      type: 'CHAT_ADMIN_TO_USER',
+      title: `${admin.hospitalName || '병원'} 메시지`,
+      message: String(text).slice(0, 80),
+      meta: { chatMessageId: doc._id }
+    });
+
+    return res.status(201).json({
+      _id: doc._id,
+      senderRole: doc.senderRole,
+      senderId: doc.senderId,
+      senderName: doc.senderName,
+      text: doc.text,
+      createdAt: doc.createdAt,
+    });
+  } catch (e) {
+    console.error('createAdminChatMessage error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+}
 
 
 const onlyUser = (req, res, next) =>
@@ -1106,86 +1159,17 @@ app.get('/api/hospital-admin/chat/threads', auth, onlyHospitalAdmin, async (req,
   }
 });
 
-// 특정 사용자와의 메시지 목록(증분)
-app.get('/api/hospital-admin/chat/messages', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    const { userId } = req.query;
-    if (!userId) return res.status(400).json({ message: 'userId required' });
+app.post(
+  '/api/hospital-admin/chat/messages',
+  auth, onlyHospitalAdmin,
+  createAdminChatMessage
+);
 
-    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-    const since = req.query.since ? new Date(String(req.query.since)) : null;
-
-    const q = { hospitalId: oid(req.jwt.uid), userId: oid(userId) };
-    if (since && !isNaN(since.getTime())) q.createdAt = { $gt: since };
-
-    const list = await ChatMessage.find(q).sort({ createdAt: 1 }).limit(limit).lean();
-    res.json(list.map(m => ({
-      _id: m._id,
-      senderRole: m.senderRole,
-      senderId: m.senderId,
-      senderName: m.senderName,
-      text: m.text,
-      createdAt: m.createdAt,
-    })));
-  } catch (e) {
-    console.error('GET admin chat messages error:', e);
-    res.status(500).json({ message: 'server error' });
-  }
-});
-
-// 관리자 전송
-app.post('/api/hospital-admin/chat/send', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    const { userId, text } = req.body || {};
-    if (!userId || !text || !String(text).trim()) return res.status(400).json({ message: 'userId/text required' });
-
-    const admin = await HospitalUser.findById(oid(req.jwt.uid)).lean();
-    if (!admin) return res.status(404).json({ message: 'hospital not found' });
-
-    const user = await User.findById(oid(userId), { name:1 }).lean();
-    if (!user) return res.status(404).json({ message: 'user not found' });
-
-    // 연동 상태 확인
-    const ok = (user.linkedHospitals || []).some(h =>
-      String(h.hospitalId) === String(admin._id) && h.status === 'APPROVED'
-    );
-    if (!ok) return res.status(403).json({ message: 'link to user required (APPROVED)' });
-
-    const doc = await ChatMessage.create({
-      hospitalId: oid(req.jwt.uid),
-      userId: oid(userId),
-      senderRole: 'ADMIN',
-      senderId: oid(req.jwt.uid),
-      senderName: (admin.name || admin.hospitalName || '병원').trim(),
-      text: String(text),
-      readByUser: false,
-      readByAdmin: true,
-    });
-
-    // 사용자 알림
-    await pushNotificationOne({
-      userId: user._id,
-      hospitalId: oid(req.jwt.uid),
-      hospitalName: admin.hospitalName || '',
-      type: 'CHAT_ADMIN_TO_USER',
-      title: `${admin.hospitalName || '병원'} 메시지`,
-      message: String(text).slice(0, 80),
-      meta: { chatMessageId: doc._id }
-    });
-
-    res.status(201).json({
-      _id: doc._id,
-      senderRole: doc.senderRole,
-      senderId: doc.senderId,
-      senderName: doc.senderName,
-      text: doc.text,
-      createdAt: doc.createdAt,
-    });
-  } catch (e) {
-    console.error('POST admin chat send error:', e);
-    res.status(500).json({ message: 'server error' });
-  }
-});
+app.post(
+  '/api/hospital-admin/chat/send',
+  auth, onlyHospitalAdmin,
+  createAdminChatMessage
+);
 
 // 읽음 처리(관리자가 해당 유저 채팅방 열었을 때)
 app.post('/api/hospital-admin/chat/read-all', auth, onlyHospitalAdmin, async (req, res) => {
