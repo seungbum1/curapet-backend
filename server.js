@@ -1320,6 +1320,8 @@ app.patch('/api/hospital-admin/profile', auth, onlyHospitalAdmin, async (req, re
       approveStatus: 'PENDING',
     };
 
+
+
     // undefined 값은 $unset 되지 않으므로, 정의된 키만 세팅
     Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
 
@@ -1336,6 +1338,23 @@ app.patch('/api/hospital-admin/profile', auth, onlyHospitalAdmin, async (req, re
     return res.status(500).json({ message: 'server error' });
   }
 });
+
+// ✅ 병원 공지사항 단일 조회
+app.get('/api/hospitals/:hospitalId/notice', async (req, res) => {
+  const { hospitalId } = req.params;
+  try {
+    const meta = await HospitalMeta.findOne({ hospitalId }).lean();
+    if (!meta) {
+      return res.status(404).json({ notice: '공지 없음' });
+    }
+    res.json({ notice: meta.notice || '공지 없음' });
+  } catch (err) {
+    console.error('GET /api/hospitals/:hospitalId/notice error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 
 // ─────────────── 사용자 알림 API ───────────────
 
