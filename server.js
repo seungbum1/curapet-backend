@@ -1339,19 +1339,39 @@ app.patch('/api/hospital-admin/profile', auth, onlyHospitalAdmin, async (req, re
   }
 });
 
-// ✅ 병원 공지사항 단일 조회
+// ✅ 병원 공지사항 단일 조회 (최신 공지 1건, 항상 200 반환)
 app.get('/api/hospitals/:hospitalId/notice', async (req, res) => {
   try {
-    const hid = oid(req.params.hospitalId);
-    const meta = await HospitalMeta.findOne({ hospitalId: hid }).lean();
-    const notice = (meta?.notice ?? '').toString().trim();
-    // 항상 200으로 반환 (없으면 빈 문자열)
+    const { hospitalId } = req.params;
+
+    // 🔴 ObjectId로 조회
+    const hid = oid(hospitalId);
+
+    // 🔴 HospitalNotice에서 최신 1건
+    const last = await HospitalNotice
+      .findOne({ hospitalId: hid })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // 🔴 보여줄 문자열 구성 (원하면 형식 조절 가능)
+    const title = (last?.title || '').toString().trim();
+    const content = (last?.content || '').toString().trim();
+
+    // 예) [공지] 타이틀 · 첫줄
+    const firstLine = content.split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
+    const notice = title || firstLine
+      ? `[공지] ${title}${firstLine ? ' · ' + firstLine : ''}`
+      : '';
+
+    // 🔴 항상 200으로 반환 (비어 있으면 빈 문자열)
     return res.json({ notice });
   } catch (err) {
     console.error('GET /api/hospitals/:hospitalId/notice error:', err);
-    return res.status(500).json({ error: err.message });
+    // 🔴 에러 상황에서도 배너 깨지지 않게 200 + 빈 문자열
+    return res.json({ notice: '' });
   }
 });
+
 
 
 // ─────────────── 사용자 알림 API ───────────────
