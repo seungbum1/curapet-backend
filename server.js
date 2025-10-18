@@ -1341,19 +1341,17 @@ app.patch('/api/hospital-admin/profile', auth, onlyHospitalAdmin, async (req, re
 
 // ✅ 병원 공지사항 단일 조회
 app.get('/api/hospitals/:hospitalId/notice', async (req, res) => {
-  const { hospitalId } = req.params;
   try {
-    const meta = await HospitalMeta.findOne({ hospitalId }).lean();
-    if (!meta) {
-      return res.status(404).json({ notice: '공지 없음' });
-    }
-    res.json({ notice: meta.notice || '공지 없음' });
+    const hid = oid(req.params.hospitalId);
+    const meta = await HospitalMeta.findOne({ hospitalId: hid }).lean();
+    const notice = (meta?.notice ?? '').toString().trim();
+    // 항상 200으로 반환 (없으면 빈 문자열)
+    return res.json({ notice });
   } catch (err) {
     console.error('GET /api/hospitals/:hospitalId/notice error:', err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
-
 
 
 // ─────────────── 사용자 알림 API ───────────────
