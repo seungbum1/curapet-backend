@@ -436,6 +436,26 @@ const hospitalNoticeSchema = new mongoose.Schema({
   createdBy:    { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
 }, { timestamps: true });
 
+// 건강관리(헬스) 스키마 — user_db에 둔다
+const healthRecordSchema = new mongoose.Schema({
+  userId:     { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  date:       { type: String, required: true, index: true }, // 'YYYY-MM-DD'
+  time:       { type: String, default: '' },                  // 'HH:mm' (옵션)
+  dateTime:   { type: Date, index: true },
+  // 측정/기록 항목 (원하는 것만 사용)
+  weight:     { type: Number, default: null },
+  height:     { type: Number, default: null },
+  temperature:{ type: Number, default: null },
+  systolic:   { type: Number, default: null }, // 수축
+  diastolic:  { type: Number, default: null }, // 이완
+  heartRate:  { type: Number, default: null },
+  glucose:    { type: Number, default: null }, // 혈당
+  memo:       { type: String,  default: '' },
+}, { timestamps: true });
+healthRecordSchema.index({ userId: 1, dateTime: -1 });
+
+const HealthRecord = userConn.model('HealthRecord', healthRecordSchema, 'health_records');
+
 
 // ─────────────── 모델 등록 ───────────────
 const User                = userConn.model('User', userSchema, 'users');
@@ -843,6 +863,127 @@ app.get('/api/users/me/hospitals', auth, onlyUser, async (req, res) => {
   }));
   return res.json({ data });
 });
+
+// ─────────────── 건강관리(헬스) API (USER 전용) ───────────────
+
+// 목록 조회 (필터: 월별/정렬/검색)
+app.get('/api/health/records', auth, onlyUser, async (req, res) => {
+  try {
+    const { month, q } = req.query;
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
+    const skip  = (page - 1) * limit;
+
+    const find = { userId: oid(req.jwt.uid) };
+    if (month) {
+      const [yy, mm] = String(month).split('-').map(Number);
+      if (!yy || !mm) return res.status(400).json({ message: 'invalid month' });
+      const start = new Date(yy, mm - 1, 1, 0, 0, 0);
+      const end   = new Date(yy, mm,     1, 0, 0, 0);
+      find.dateTime = { $gte: start, $lt: end };
+    }
+    if (q && String(q).trim()) {
+      const rx = new RegExp(String(q).trim(), 'i');
+      find.$or = [{ memo: rx }];
+    }
+
+    const [items, total] = await Promise.all([
+      HealthRecord.find(find).sort({ dateTime: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      HealthRecord.countDocuments(find),
+    ]);
+    res.json({ data: items, paging: { total, page, limit } });
+  } catch (e) {
+    console.error('GET /api/health/records error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+// 단일 등록
+app.post('/api/health/records', auth, onlyUser, async (req, res) => {
+  try {
+    const {
+      date, time = '', memo = '',
+      weight = null, height = null, temperature = null,
+      systolic = null, diastolic = null, heartRate = null, glucose = null
+    } = req.body || {};
+
+    if (!date) return res.status(400).json({ message: 'date required' });
+
+    const dt = new Date(`${date}T${(time || '00:00')}:00`);
+    const doc = await HealthRecord.create({
+      userId: oid(req.jwt.uid),
+      date: String(date),
+      time: String(time),
+      dateTime: isNaN(dt.getTime()) ? new Date() : dt,
+      memo: String(memo || ''),
+      weight, height, temperature, systolic, diastolic, heartRate, glucose,
+    });
+
+    res.status(201).json({ data: doc });
+  } catch (e) {
+    console.error('POST /api/health/records error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+// 수정
+app.put('/api/health/records/:id', auth, onlyUser, async (req, res) => {
+  try {
+    const id = oid(req.params.id);
+    if (!id) return res.status(400).json({ message: 'invalid id' });
+
+    const rec = await HealthRecord.findOne({ _id: id, userId: oid(req.jwt.uid) });
+    if (!rec) return res.status(404).json({ message: 'not found' });
+
+    const {
+      date, time, memo,
+      weight, height, temperature,
+      systolic, diastolic, heartRate, glucose
+    } = req.body || {};
+
+    const update = {};
+    if (typeof date === 'string') update.date = date;
+    if (typeof time === 'string') update.time = time;
+    if (typeof memo === 'string') update.memo = memo;
+
+    ['weight','height','temperature','systolic','diastolic','heartRate','glucose'].forEach(k => {
+      if (req.body.hasOwnProperty(k)) update[k] = req.body[k];
+    });
+
+    if (update.date || update.time) {
+      const d = update.date || rec.date;
+      const t = (update.time ?? rec.time) || '00:00';
+      const dt = new Date(`${d}T${t}:00`);
+      update.dateTime = isNaN(dt.getTime()) ? rec.dateTime : dt;
+    }
+
+    const saved = await HealthRecord.findOneAndUpdate(
+      { _id: id, userId: oid(req.jwt.uid) },
+      { $set: update },
+      { new: true }
+    ).lean();
+
+    res.json({ data: saved });
+  } catch (e) {
+    console.error('PUT /api/health/records/:id error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+// 삭제
+app.delete('/api/health/records/:id', auth, onlyUser, async (req, res) => {
+  try {
+    const id = oid(req.params.id);
+    if (!id) return res.status(400).json({ message: 'invalid id' });
+    const del = await HealthRecord.deleteOne({ _id: id, userId: oid(req.jwt.uid) });
+    if (!del.deletedCount) return res.status(404).json({ message: 'not found' });
+    res.status(204).send();
+  } catch (e) {
+    console.error('DELETE /api/health/records/:id error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
 
 // ─────────────── 병원관리자: 케어일지 목록/등록 ───────────────
 app.get('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, async (req, res) => {
@@ -1301,7 +1442,7 @@ app.post('/api/hospitals/:hospitalId/chat/send', auth, onlyUser, async (req, res
       type: 'CHAT_USER_TO_ADMIN',
       title: '새 채팅 도착',
       message: String(text).slice(0, 80),
-      meta: { userId: req.jwt.uid, chatMessageId: doc._id }
+      meta: { userId: req.jwt.uid, chatMessageId: doc._id, healthRecordId: doc._id }
     });
 
     res.status(201).json({
