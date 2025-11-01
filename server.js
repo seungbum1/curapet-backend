@@ -949,6 +949,74 @@ app.get('/api/users/me/hospitals', auth, onlyUser, async (req, res) => {
 // ======================================================================
 // 특정 시각 HealthRecord(사용자 문서 내 chart 동시 삭제)
 // ======================================================================
+
+
+app.post('/users/me/health-record', auth, onlyUser, async (req, res) => {
+  try {
+    const userId = req.jwt.uid;
+    const { date, weight, activity, intake } = req.body;
+
+    if (!date) {
+      return res.status(400).json({ message: '날짜는 필수입니다.' });
+    }
+    console.log(`✅ 건강 기록 추가 요청 (사용자: ${userId}):`, req.body);
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
+    }
+
+    if (!user.petProfile) user.petProfile = {};
+    if (!user.petProfile.healthChart) {
+      user.petProfile.healthChart = { weight: [], activity: [], intake: [] };
+    }
+
+    const recordDate = new Date(date);
+
+    // 1. 체중 데이터 처리
+    if (weight && typeof weight.bodyWeight === 'number') {
+      const weightRecord = {
+        date: recordDate,
+        bodyWeight: weight.bodyWeight,
+        // ✅ 나머지 상세 데이터도 null/undefined가 아닐 경우에만 추가
+        ...(typeof weight.muscleMass === 'number' && { muscleMass: weight.muscleMass }),
+        ...(typeof weight.bodyFatMass === 'number' && { bodyFatMass: weight.bodyFatMass }),
+      };
+      user.petProfile.healthChart.weight.push(weightRecord);
+    }
+
+    // 2. 활동량 데이터 처리
+    if (activity && typeof activity.time === 'number') {
+      const activityRecord = {
+        date: recordDate,
+        time: activity.time,
+        ...(typeof activity.calories === 'number' && { calories: activity.calories }),
+      };
+      user.petProfile.healthChart.activity.push(activityRecord);
+    }
+
+    // 3. 섭취량 데이터 처리
+    if (intake && typeof intake.food === 'number') {
+      const intakeRecord = {
+        date: recordDate,
+        food: intake.food,
+        ...(typeof intake.water === 'number' && { water: intake.water }),
+      };
+      user.petProfile.healthChart.intake.push(intakeRecord);
+    }
+
+    await user.save();
+
+    console.log('💾 건강 기록이 DB에 저장되었습니다.');
+    return res.status(200).json({ petProfile: user.petProfile });
+
+  } catch (error) {
+    console.error('❌ 건강 기록 저장 중 오류:', error);
+    return res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+
 app.delete('/users/health-record', auth, onlyUser, async (req, res) => {
   try {
     const userId = req.jwt.uid;
