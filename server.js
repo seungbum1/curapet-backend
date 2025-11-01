@@ -267,19 +267,96 @@ adminConn.on('connected',    () => console.log('✅ adminConn -> admin_db'));
 );
 
 // ─────────────── 스키마 ───────────────
+
+// 체중/체성분 기록 (배열 원소에 개별 _id 불필요 → _id:false)
+const HealthWeightSchema = new mongoose.Schema(
+  {
+    date:        { type: Date, required: true, index: true },
+    bodyWeight:  { type: Number, default: null }, // kg
+    muscleMass:  { type: Number, default: null }, // kg
+    bodyFatMass: { type: Number, default: null }, // kg
+  },
+  { _id: false }
+);
+
+// 활동량 기록
+const HealthActivitySchema = new mongoose.Schema(
+  {
+    date:     { type: Date, required: true, index: true },
+    time:     { type: Number, default: null }, // 분
+    calories: { type: Number, default: null }, // kcal
+  },
+  { _id: false }
+);
+
+// 섭취 기록
+const HealthIntakeSchema = new mongoose.Schema(
+  {
+    date:  { type: Date, required: true, index: true },
+    food:  { type: Number, default: null }, // g 또는 kcal (클라이언트 규약에 맞춰 사용)
+    water: { type: Number, default: null }, // ml
+  },
+  { _id: false }
+);
+
+// 일기(Diary) — 배열 원소에 _id 필요(.id()로 접근) → 기본값 사용
+const DiarySchema = new mongoose.Schema(
+  {
+    title:     { type: String, default: '' },
+    content:   { type: String, default: '' },
+    date:      { type: Date,   default: Date.now, index: true },
+    imagePath: { type: String, default: '' }, // 업로드 경로 또는 URL
+  },
+  { _id: true }
+);
+
+// 복약 알람(Alarm) — 배열 원소에 _id 필요(.id()로 접근)
+const AlarmSchema = new mongoose.Schema(
+  {
+    time:          { type: String,  required: true },         // 'HH:mm' 등 클라 규약
+    label:         { type: String,  required: true },
+    isActive:      { type: Boolean, default: true },
+    // 요일: 0(일)~6(토) 같은 정수 배열. (클라가 문자열 사용 시 문자열 배열로 바꿔도 OK)
+    repeatDays:    [{ type: Number }],                        // 예: [1,4] → 월/목
+    // 다시 울림 분. null 허용 → undefined과 구분하려면 클라에서 필드 자체를 보내기
+    snoozeMinutes: { type: Number, default: null },
+  },
+  { _id: true }
+);
+
+// PetProfile 전체
+const PetProfileSchema = new mongoose.Schema(
+  {
+    // 기본 프로필
+    name:      { type: String, default: '' },
+    age:       { type: Number, default: 0 },
+    gender:    { type: String, default: '' },
+    species:   { type: String, default: '' },
+    avatarUrl: { type: String, default: '' },
+
+    // 건강 기록
+    healthChart: {
+      weight:   { type: [HealthWeightSchema],   default: [] },
+      activity: { type: [HealthActivitySchema], default: [] },
+      intake:   { type: [HealthIntakeSchema],   default: [] },
+    },
+
+    // 일기 & 알람
+    diaries: { type: [DiarySchema],  default: [] },
+    alarms:  { type: [AlarmSchema],  default: [] },
+  },
+  { _id: false }
+);
+
 const userSchema = new mongoose.Schema({
   email:        { type: String, required: true, unique: true, index: true },
   passwordHash: { type: String, required: true },
   name:         { type: String, default: '' },
   role:         { type: String, enum: ['USER'], default: 'USER', index: true },
   birthDate:    { type: String, default: '' },
-  petProfile: {
-    name:      { type: String, default: '' },
-    age:       { type: Number, default: 0 },
-    gender:    { type: String, default: '' },
-    species:   { type: String, default: '' },
-    avatarUrl: { type: String, default: '' },
-  },
+
+  petProfile:   { type: PetProfileSchema, default: {} },
+
   linkedHospitals: [{
     hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
     hospitalName: { type: String, default: '' },
@@ -305,6 +382,7 @@ const hospitalUserSchema = new mongoose.Schema({
   approveStatus: { type: String, enum: ['PENDING','APPROVED','REJECTED'], default: 'PENDING', index: true },
 }, { timestamps: true });
 
+// 연동 요청
 const hospitalLinkRequestSchema = new mongoose.Schema({
   userId:       { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
   userName:     { type: String, default: '' },
@@ -316,6 +394,7 @@ const hospitalLinkRequestSchema = new mongoose.Schema({
   decidedAt:    { type: Date, default: null }
 });
 
+// 병원 메타
 const hospitalMetaSchema = new mongoose.Schema({
   hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, unique: true, index: true },
   hospitalName: { type: String, default: '' },
@@ -324,6 +403,7 @@ const hospitalMetaSchema = new mongoose.Schema({
   doctors:      [{ id: String, name: String }],
 }, { timestamps: true });
 
+// 병원 예약 (기존)
 const appointmentSchema = new mongoose.Schema({
   hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
   hospitalName: { type: String, default: '' },
@@ -355,6 +435,7 @@ const medicalHistorySchema = new mongoose.Schema({
   cost:         { type: String, default: '' },
 }, { timestamps: true });
 
+// 사용자 예약 복제 스키마
 const userAppointmentSchema = new mongoose.Schema({
   userId:             { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
   originAppointmentId:{ type: mongoose.Schema.Types.ObjectId, required: true, index: true },
@@ -865,122 +946,228 @@ app.get('/api/users/me/hospitals', auth, onlyUser, async (req, res) => {
 });
 
 // ─────────────── 건강관리(헬스) API (USER 전용) ───────────────
-
-// 목록 조회 (필터: 월별/정렬/검색)
-app.get('/api/health/records', auth, onlyUser, async (req, res) => {
+// ======================================================================
+// 특정 시각 HealthRecord(사용자 문서 내 chart 동시 삭제)
+// ======================================================================
+app.delete('/users/health-record', auth, onlyUser, async (req, res) => {
   try {
-    const { month, q } = req.query;
-    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-    const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
-    const skip  = (page - 1) * limit;
+    const userId = req.jwt.uid;
+    const { date } = req.body; // ex) '2025-10-20T15:05:58.000Z'
 
-    const find = { userId: oid(req.jwt.uid) };
-    if (month) {
-      const [yy, mm] = String(month).split('-').map(Number);
-      if (!yy || !mm) return res.status(400).json({ message: 'invalid month' });
-      const start = new Date(yy, mm - 1, 1, 0, 0, 0);
-      const end   = new Date(yy, mm,     1, 0, 0, 0);
-      find.dateTime = { $gte: start, $lt: end };
-    }
-    if (q && String(q).trim()) {
-      const rx = new RegExp(String(q).trim(), 'i');
-      find.$or = [{ memo: rx }];
+    console.log('--- 🎯 특정 시간 기록 동시 삭제 요청 수신 ---');
+    console.log('요청 Body:', { date });
+
+    if (!date) {
+      return res.status(400).json({ message: '삭제할 날짜(시간) 정보가 필요합니다.' });
     }
 
-    const [items, total] = await Promise.all([
-      HealthRecord.find(find).sort({ dateTime: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
-      HealthRecord.countDocuments(find),
-    ]);
-    res.json({ data: items, paging: { total, page, limit } });
-  } catch (e) {
-    console.error('GET /api/health/records error:', e);
-    res.status(500).json({ message: 'server error' });
+    // 프론트에서 받은 ISO 시간 문자열을 Date로 변환해 정확 일치 삭제
+    const targetDate = new Date(date);
+
+    await User.updateOne(
+      { _id: userId },
+      {
+        $pull: {
+          'petProfile.healthChart.weight':   { date: targetDate },
+          'petProfile.healthChart.activity': { date: targetDate },
+          'petProfile.healthChart.intake':   { date: targetDate },
+        }
+      }
+    );
+
+    console.log(`✅ 성공: '${targetDate.toISOString()}' 시간의 기록을 모두 삭제했습니다.`);
+    return res.status(204).send();
+  } catch (error) {
+    console.error('❌ 특정 시간 기록 삭제 중 오류:', error);
+    return res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
 });
 
-// 단일 등록
-app.post('/api/health/records', auth, onlyUser, async (req, res) => {
+
+// ======================================================================
+// ✅✅✅ 일기(Diary) CRUD API
+// ======================================================================
+
+// [GET] 내 모든 일기 목록 조회
+app.get('/diaries', auth, onlyUser, async (req, res) => {
   try {
-    const {
-      date, time = '', memo = '',
-      weight = null, height = null, temperature = null,
-      systolic = null, diastolic = null, heartRate = null, glucose = null
-    } = req.body || {};
+    const user = await User.findById(req.jwt.uid, { 'petProfile.diaries': 1 }).lean();
+    if (!user || !user.petProfile) return res.json([]);
 
-    if (!date) return res.status(400).json({ message: 'date required' });
+    // 날짜 내림차순 정렬
+    const sorted = [...(user.petProfile.diaries || [])]
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
 
-    const dt = new Date(`${date}T${(time || '00:00')}:00`);
-    const doc = await HealthRecord.create({
-      userId: oid(req.jwt.uid),
-      date: String(date),
-      time: String(time),
-      dateTime: isNaN(dt.getTime()) ? new Date() : dt,
-      memo: String(memo || ''),
-      weight, height, temperature, systolic, diastolic, heartRate, glucose,
+    return res.json(sorted);
+  } catch (e) {
+    console.error('GET /diaries error:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// [POST] 새 일기 작성 (이미지 업로드는 multipart/form-data, 키: image)
+app.post('/diaries', auth, onlyUser, upload.single('image'), async (req, res) => {
+  try {
+    const user = await User.findById(req.jwt.uid);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const { title, content, date } = req.body;
+    const imagePath = req.file ? req.file.path : '';
+
+    if (!user.petProfile) user.petProfile = {};
+    if (!user.petProfile.diaries) user.petProfile.diaries = [];
+
+    const newDiary = {
+      title: (title || '').toString(),
+      content: (content || '').toString(),
+      date: new Date(date),
+      imagePath,
+    };
+
+    user.petProfile.diaries.push(newDiary);
+    await user.save();
+
+    const saved = user.petProfile.diaries[user.petProfile.diaries.length - 1];
+    return res.status(201).json(saved);
+  } catch (e) {
+    console.error('POST /diaries error:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// [PUT] 특정 일기 수정
+app.put('/diaries/:id', auth, onlyUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, content, date, imagePath } = req.body;
+
+    const user = await User.findById(req.jwt.uid);
+    if (!user?.petProfile?.diaries) return res.status(404).json({ message: 'Diary not found' });
+
+    const diary = user.petProfile.diaries.id(id);
+    if (!diary) return res.status(404).json({ message: 'Diary not found' });
+
+    diary.set({
+      ...(title !== undefined ? { title } : {}),
+      ...(content !== undefined ? { content } : {}),
+      ...(date !== undefined ? { date: new Date(date) } : {}),
+      ...(imagePath !== undefined ? { imagePath } : {}),
     });
 
-    res.status(201).json({ data: doc });
+    await user.save();
+    return res.json(diary);
   } catch (e) {
-    console.error('POST /api/health/records error:', e);
-    res.status(500).json({ message: 'server error' });
+    console.error('PUT /diaries/:id error:', e);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
-// 수정
-app.put('/api/health/records/:id', auth, onlyUser, async (req, res) => {
+// [DELETE] 특정 일기 삭제
+app.delete('/diaries/:id', auth, onlyUser, async (req, res) => {
   try {
-    const id = oid(req.params.id);
-    if (!id) return res.status(400).json({ message: 'invalid id' });
+    const { id } = req.params;
+    await User.updateOne(
+      { _id: req.jwt.uid },
+      { $pull: { 'petProfile.diaries': { _id: id } } }
+    );
+    return res.status(204).send();
+  } catch (e) {
+    console.error('DELETE /diaries/:id error:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
 
-    const rec = await HealthRecord.findOne({ _id: id, userId: oid(req.jwt.uid) });
-    if (!rec) return res.status(404).json({ message: 'not found' });
 
-    const {
-      date, time, memo,
-      weight, height, temperature,
-      systolic, diastolic, heartRate, glucose
-    } = req.body || {};
+// ======================================================================
+// ✅✅✅ 복약 알림(Alarms) CRUD API
+// - repeatDays: string[] (예: ['Mon','Thu'])
+// - snoozeMinutes: number | null
+// ======================================================================
 
-    const update = {};
-    if (typeof date === 'string') update.date = date;
-    if (typeof time === 'string') update.time = time;
-    if (typeof memo === 'string') update.memo = memo;
+// [GET] 내 모든 알림 목록 조회
+app.get('/users/me/alarms', auth, onlyUser, async (req, res) => {
+  try {
+    const user = await User.findById(req.jwt.uid, { 'petProfile.alarms': 1 }).lean();
+    if (!user || !user.petProfile) return res.json([]);
+    return res.json(user.petProfile.alarms || []);
+  } catch (e) {
+    console.error('GET /users/me/alarms error:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
 
-    ['weight','height','temperature','systolic','diastolic','heartRate','glucose'].forEach(k => {
-      if (req.body.hasOwnProperty(k)) update[k] = req.body[k];
-    });
-
-    if (update.date || update.time) {
-      const d = update.date || rec.date;
-      const t = (update.time ?? rec.time) || '00:00';
-      const dt = new Date(`${d}T${t}:00`);
-      update.dateTime = isNaN(dt.getTime()) ? rec.dateTime : dt;
+// [POST] 새 알림 추가 (확장 필드 포함)
+app.post('/users/me/alarms', auth, onlyUser, async (req, res) => {
+  try {
+    const { time, label, isActive, repeatDays, snoozeMinutes } = req.body;
+    if (!time || !label) {
+      return res.status(400).json({ message: 'Time and label are required.' });
     }
 
-    const saved = await HealthRecord.findOneAndUpdate(
-      { _id: id, userId: oid(req.jwt.uid) },
-      { $set: update },
-      { new: true }
-    ).lean();
+    const user = await User.findById(req.jwt.uid);
+    if (!user) return res.status(404).json({ message: 'User not found' });
 
-    res.json({ data: saved });
+    if (!user.petProfile) user.petProfile = {};
+    if (!user.petProfile.alarms) user.petProfile.alarms = [];
+
+    const newAlarm = {
+      time,
+      label,
+      isActive: isActive !== false,
+      repeatDays: Array.isArray(repeatDays) ? repeatDays : [],
+      // null 허용 → hasOwnProperty 로 구분해 저장
+      ...(req.body.hasOwnProperty('snoozeMinutes') ? { snoozeMinutes } : {}),
+    };
+
+    user.petProfile.alarms.push(newAlarm);
+    await user.save();
+
+    const saved = user.petProfile.alarms[user.petProfile.alarms.length - 1];
+    return res.status(201).json(saved);
   } catch (e) {
-    console.error('PUT /api/health/records/:id error:', e);
-    res.status(500).json({ message: 'server error' });
+    console.error('POST /users/me/alarms error:', e);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
-// 삭제
-app.delete('/api/health/records/:id', auth, onlyUser, async (req, res) => {
+// [PUT] 특정 알림 수정 (부분 업데이트 허용)
+app.put('/users/me/alarms/:id', auth, onlyUser, async (req, res) => {
   try {
-    const id = oid(req.params.id);
-    if (!id) return res.status(400).json({ message: 'invalid id' });
-    const del = await HealthRecord.deleteOne({ _id: id, userId: oid(req.jwt.uid) });
-    if (!del.deletedCount) return res.status(404).json({ message: 'not found' });
-    res.status(204).send();
+    const { id } = req.params;
+    const { time, label, isActive, repeatDays, snoozeMinutes } = req.body;
+
+    const user = await User.findById(req.jwt.uid);
+    if (!user?.petProfile?.alarms) return res.status(404).json({ message: 'Alarm not found' });
+
+    const alarm = user.petProfile.alarms.id(id);
+    if (!alarm) return res.status(404).json({ message: 'Alarm not found' });
+
+    if (time !== undefined) alarm.time = time;
+    if (label !== undefined) alarm.label = label;
+    if (isActive !== undefined) alarm.isActive = isActive;
+    if (repeatDays !== undefined) alarm.repeatDays = repeatDays;
+    if (req.body.hasOwnProperty('snoozeMinutes')) alarm.snoozeMinutes = snoozeMinutes;
+
+    await user.save();
+    return res.json(alarm);
   } catch (e) {
-    console.error('DELETE /api/health/records/:id error:', e);
-    res.status(500).json({ message: 'server error' });
+    console.error('PUT /users/me/alarms/:id error:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// [DELETE] 특정 알림 삭제
+app.delete('/users/me/alarms/:id', auth, onlyUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await User.updateOne(
+      { _id: req.jwt.uid },
+      { $pull: { 'petProfile.alarms': { _id: id } } }
+    );
+    return res.status(204).send();
+  } catch (e) {
+    console.error('DELETE /users/me/alarms/:id error:', e);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
