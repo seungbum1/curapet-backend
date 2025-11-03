@@ -10,6 +10,10 @@ const helmet = require('helmet');
 const compression = require('compression');
 const morgan = require('morgan');
 
+const clean = (v) => (v ?? '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '');
+
 // ── 환경변수
 const PORT = process.env.PORT || 4000;                  // Render가 PORT를 주입함
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || '')
