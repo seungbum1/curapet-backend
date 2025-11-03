@@ -18,6 +18,9 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const PORT        = process.env.PORT || 4000;
 const JWT_SECRET  = process.env.JWT_SECRET;
 
+
+
+
 // ─────────────── 환경변수 필수 체크 ───────────────
 if (!MONGODB_URI) {
   console.error('❌ MONGODB_URI is required');
@@ -39,6 +42,14 @@ app.use(helmet({
 }));
 app.use(compression());
 app.use(morgan('dev'));
+
+
+
+
+
+// ────────────────────────────────────────────────────────────
+// const 부분
+// ────────────────────────────────────────────────────────────
 
 // CORS: 화이트리스트 → 없으면 전체 허용(개발편의)
 const allowOrigins = (process.env.CORS_ORIGINS || '')
@@ -103,7 +114,12 @@ const uploadLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+
+
+// ────────────────────────────────────────────────────────────
 // ─────────────── 공통 유틸 ───────────────
+// ────────────────────────────────────────────────────────────
+
 function issueToken(doc) {
   return jwt.sign({ uid: doc._id, role: doc.role }, JWT_SECRET, { expiresIn: '7d' });
 }
@@ -238,7 +254,7 @@ async function createAdminChatMessage(req, res) {
   }
 }
 
-
+// ────────────────────────────────────────────────────────────
 const onlyUser = (req, res, next) =>
   req.jwt?.role === 'USER' ? next() : res.status(403).json({ message: 'for USER' });
 const onlyHospitalAdmin = (req, res, next) =>
@@ -249,7 +265,14 @@ const oid = (v) => {
   try { return new mongoose.Types.ObjectId(String(v)); } catch { return null; }
 };
 
-// ─────────────── Mongoose ───────────────
+
+
+
+
+
+// ────────────────────────────────────────────────────────────
+// ─────────────── Mongoose server───────────────
+// ────────────────────────────────────────────────────────────
 mongoose.set('strictQuery', true);
 
 // 커넥션
@@ -266,7 +289,14 @@ adminConn.on('connected',    () => console.log('✅ adminConn -> admin_db'));
   c.on('error', (e) => console.error('Mongo error:', e?.message || e))
 );
 
-// ─────────────── 스키마 ───────────────
+
+
+
+
+
+// ────────────────────────────────────────────────────────────
+// ─────────────── 스키마 server───────────────
+// ────────────────────────────────────────────────────────────
 
 // 체중/체성분 기록 (배열 원소에 개별 _id 불필요 → _id:false)
 const HealthWeightSchema = new mongoose.Schema(
@@ -538,7 +568,14 @@ healthRecordSchema.index({ userId: 1, dateTime: -1 });
 const HealthRecord = userConn.model('HealthRecord', healthRecordSchema, 'health_records');
 
 
-// ─────────────── 모델 등록 ───────────────
+
+
+
+
+// ────────────────────────────────────────────────────────────
+// ─────────────── 모델 server ───────────────
+// ────────────────────────────────────────────────────────────
+
 const User                = userConn.model('User', userSchema, 'users');
 const HospitalUser        = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
 const HospitalLinkRequest = hospitalConn.model('HospitalLinkRequest', hospitalLinkRequestSchema, 'hospital_link_requests');
@@ -553,7 +590,13 @@ const HospitalNotice = hospitalConn.model('HospitalNotice', hospitalNoticeSchema
 const ChatMessage = hospitalConn.model('ChatMessage', chatMessageSchema, 'chat_messages');
 
 
+
+
+
+// ────────────────────────────────────────────────────────────
 // ─────────────── 헬스 & 루트 ───────────────
+// ────────────────────────────────────────────────────────────
+
 app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 app.get('/', (_req, res) => res.json({ message: '🚀 Animal API running', env: process.env.NODE_ENV || 'dev' }));
 
@@ -680,6 +723,147 @@ app.put('/hospital/profile', auth, onlyHospitalAdmin, async (req, res) => {
   res.json({ user: admin });
 });
 
+
+
+
+
+// ────────────────────────────────────────────────────────────
+// 병원 server
+// ────────────────────────────────────────────────────────────
+
+// SOS 전송(로그 저장; 추후 문자/푸시 연동 지점)
+app.post('/api/hospital-admin/sos', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { userId, hospitalId, message } = req.body || {};
+    if (!userId) return res.status(400).json({ message: 'userId required' });
+
+    const user = await User.findById(oid(userId)).lean();
+    if (!user) return res.status(404).json({ message: 'user not found' });
+
+    // 병원 ID/이름 확정
+    const hid = oid(hospitalId || req.jwt.uid);
+    let hospitalName = '';
+    const approved = (user.linkedHospitals || []).find(h =>
+      String(h.hospitalId) === String(hid) && h.status === 'APPROVED'
+    );
+    if (approved) hospitalName = approved.hospitalName || '';
+
+    const log = await SosLog.create({
+      hospitalId: hid,
+      hospitalName,
+      userId: user._id,
+      userName: user.name || '',
+      petName: user.petProfile?.name || '',
+      message: (message || '').toString(),
+    });
+
+await pushNotificationOne({
+  userId: user._id,
+  hospitalId: hid,
+  hospitalName,
+  type: 'SOS_ALERT',
+  title: '병원 긴급 알림',
+  message: (message || '').toString(),
+  meta: { sosId: log._id }
+});
+
+
+    // TODO: 문자/알림 연동 (Twilio/알리고/FCM 등)
+    return res.status(201).json({ ok: true, id: log._id });
+  } catch (e) {
+    console.error('POST /api/hospital-admin/sos error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+});
+
+app.get('/api/hospital-admin/profile', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const admin = await HospitalUser.findById(oid(req.jwt.uid)).lean();
+    if (!admin) return res.status(404).json({ message: 'not found' });
+    return res.json({ data: hospitalAdminProfileDto(admin) });
+  } catch (e) {
+    console.error('GET /api/hospital-admin/profile error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+});
+
+// PATCH /api/hospital-admin/profile  → 마이페이지 우상단 편집 저장에서 사용
+app.patch('/api/hospital-admin/profile', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    // Flutter가 보내는 바디: { name, intro } (name = 병원명)
+    // 추가 호환: { hospitalName, photoUrl, address, hours, phone }
+    const {
+      name,
+      hospitalName,
+      intro,
+      photoUrl,
+      address,
+      hours,
+      phone,
+    } = req.body || {};
+
+    const update = {
+      ...(typeof (hospitalName ?? name) === 'string'
+        ? { hospitalName: (hospitalName ?? name).trim() }
+        : {}),
+      'hospitalProfile.photoUrl': typeof photoUrl === 'string' ? photoUrl.trim() : undefined,
+      'hospitalProfile.intro':    typeof intro    === 'string' ? intro.trim()    : undefined,
+      'hospitalProfile.address':  typeof address  === 'string' ? address.trim()  : undefined,
+      'hospitalProfile.hours':    typeof hours    === 'string' ? hours.trim()    : undefined,
+      'hospitalProfile.phone':    typeof phone    === 'string' ? phone.trim()    : undefined,
+      // 프로필 변경 시 다시 승인 필요하도록 기존 로직 유지
+      approveStatus: 'PENDING',
+    };
+    // undefined 값은 $unset 되지 않으므로, 정의된 키만 세팅
+    Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
+
+    const admin = await HospitalUser.findByIdAndUpdate(
+      oid(req.jwt.uid),
+      { $set: update },
+      { new: true, lean: true }
+    );
+    if (!admin) return res.status(404).json({ message: 'not found' });
+
+    return res.json({ data: hospitalAdminProfileDto(admin) });
+  } catch (e) {
+    console.error('PATCH /api/hospital-admin/profile error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+});
+
+// ✅ 병원 공지사항 단일 조회 (최신 공지 1건, 항상 200 반환)
+app.get('/api/hospitals/:hospitalId/notice', async (req, res) => {
+  try {
+    const { hospitalId } = req.params;
+
+    // 🔴 ObjectId로 조회
+    const hid = oid(hospitalId);
+
+    // 🔴 HospitalNotice에서 최신 1건
+    const last = await HospitalNotice
+      .findOne({ hospitalId: hid })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // 🔴 보여줄 문자열 구성 (원하면 형식 조절 가능)
+    const title = (last?.title || '').toString().trim();
+    const content = (last?.content || '').toString().trim();
+
+    // 예) [공지] 타이틀 · 첫줄
+    const firstLine = content.split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
+    const notice = title || firstLine
+      ? `[공지] ${title}${firstLine ? ' · ' + firstLine : ''}`
+      : '';
+
+    // 🔴 항상 200으로 반환 (비어 있으면 빈 문자열)
+    return res.json({ notice });
+  } catch (err) {
+    console.error('GET /api/hospitals/:hospitalId/notice error:', err);
+    // 🔴 에러 상황에서도 배너 깨지지 않게 200 + 빈 문자열
+    return res.json({ notice: '' });
+  }
+});
+
 // ─────────────── 병원 목록 ───────────────
 app.get('/api/hospitals', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
@@ -767,6 +951,121 @@ app.post('/api/hospitals/:id/connect', auth, onlyUser, async (req, res) => {
   } catch (e) { console.error('compat connect error:', e); res.status(500).json({ message: 'server error' }); }
 });
 
+// ─────────────── 병원관리자: 예약함/승인/거절 ───────────────
+
+app.get('/api/hospital-admin/appointments', auth, onlyHospitalAdmin, async (req, res) => {
+  const status = (req.query.status || '').toString().toUpperCase();
+  const order  = (req.query.order || 'desc').toString().toLowerCase();
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+  const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
+  const skip  = (page - 1) * limit;
+
+  const q = { hospitalId: oid(req.jwt.uid) };
+  if (['PENDING','APPROVED','REJECTED','CANCELED'].includes(status)) q.status = status;
+  const sort = order === 'asc' ? 1 : -1;
+
+  const [items, total] = await Promise.all([
+    Appointment.find(q).sort({ createdAt: sort }).skip(skip).limit(limit).lean(),
+    Appointment.countDocuments(q),
+  ]);
+  res.json({ data: items, paging: { total, page, limit } });
+});
+
+app.post('/api/hospital-admin/appointments/:id/approve', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const appt = await Appointment.findById(oid(req.params.id));
+    if (!appt) return res.status(404).json({ message: 'not found' });
+    if (String(appt.hospitalId) !== String(req.jwt.uid)) return res.status(403).json({ message: 'forbidden' });
+    if (appt.status !== 'PENDING') return res.status(409).json({ message: 'already decided' });
+    appt.status = 'APPROVED';
+    appt.decidedAt = new Date();
+    appt.decidedBy = oid(req.jwt.uid);
+    await appt.save();
+    await UserAppointment.updateOne({ originAppointmentId: appt._id }, { $set: { status: 'APPROVED' } });
+
+// ✅ pushNotificationOne 추가 (return 전에)
+await pushNotificationOne({
+  userId: appt.userId,
+  hospitalId: appt.hospitalId,
+  hospitalName: appt.hospitalName || '',
+  type: 'APPOINTMENT_APPROVED',
+  title: '진료 예약 승인',
+  message: `${appt.date} ${appt.time} · ${appt.service} (${appt.doctorName || '담당의'})`,
+  meta: { appointmentId: appt._id }
+});
+
+    res.json({ ok: true });
+  } catch (e) { console.error('approve appt error:', e); res.status(500).json({ message: 'server error' }); }
+});
+
+app.post('/api/hospital-admin/appointments/:id/reject', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const appt = await Appointment.findById(oid(req.params.id));
+    if (!appt) return res.status(404).json({ message: 'not found' });
+    if (String(appt.hospitalId) !== String(req.jwt.uid)) return res.status(403).json({ message: 'forbidden' });
+    if (appt.status !== 'PENDING') return res.status(409).json({ message: 'already decided' });
+    appt.status = 'REJECTED';
+    appt.decidedAt = new Date();
+    appt.decidedBy = oid(req.jwt.uid);
+    await appt.save();
+    await UserAppointment.updateOne({ originAppointmentId: appt._id }, { $set: { status: 'REJECTED' } });
+// 거절 처리 부분도 동일하게 res.json 전에
+await pushNotificationOne({
+  userId: appt.userId,
+  hospitalId: appt.hospitalId,
+  hospitalName: appt.hospitalName || '',
+  type: 'APPOINTMENT_REJECTED',
+  title: '진료 예약 거절',
+  message: `${appt.date} ${appt.time} · ${appt.service}`,
+  meta: { appointmentId: appt._id }
+});
+
+
+    res.json({ ok: true });
+  } catch (e) { console.error('reject appt error:', e); res.status(500).json({ message: 'server error' }); }
+});
+
+// 관리자: 특정 사용자와의 채팅 메시지 목록(증분)
+app.get('/api/hospital-admin/chat/messages', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { userId } = req.query || {};
+    if (!userId) return res.status(400).json({ message: 'userId required' });
+
+    const hid = oid(req.jwt.uid);
+    const uid = oid(userId);
+    if (!hid || !uid) return res.status(400).json({ message: 'invalid id' });
+
+    // 사용자 존재/연동 확인
+    const user = await User.findById(uid, { linkedHospitals: 1, name: 1 }).lean();
+    if (!user) return res.status(404).json({ message: 'user not found' });
+    const linked = (user.linkedHospitals || []).some(h =>
+      String(h.hospitalId) === String(hid) && h.status === 'APPROVED'
+    );
+    if (!linked) return res.status(403).json({ message: 'link to user required (APPROVED)' });
+
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const since = req.query.since ? new Date(String(req.query.since)) : null;
+
+    const q = { hospitalId: hid, userId: uid };
+    if (since && !isNaN(since.getTime())) q.createdAt = { $gt: since };
+
+    const list = await ChatMessage.find(q).sort({ createdAt: 1 }).limit(limit).lean();
+
+    // 응답 포맷은 사용자측과 동일하게
+    return res.json(list.map(m => ({
+      _id: m._id,
+      senderRole: m.senderRole,
+      senderId: m.senderId,
+      senderName: m.senderName,
+      text: m.text,
+      createdAt: m.createdAt,
+    })));
+  } catch (e) {
+    console.error('GET admin chat messages error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+});
+
 // ─────────────── 병원관리자: 요청/승인/거절 ───────────────
 app.get('/api/hospital-admin/requests', auth, onlyHospitalAdmin, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
@@ -839,7 +1138,6 @@ app.get('/api/hospital-admin/linked-users', auth, onlyHospitalAdmin, async (req,
     res.status(500).json({ message: 'server error' });
   }
 });
-
 
 // ─────────────── 병원관리자: 환자/진료내역 ───────────────
 app.get('/api/hospital-admin/patients', auth, onlyHospitalAdmin, async (req, res) => {
@@ -926,30 +1224,281 @@ app.post('/api/hospital-admin/medical-histories', auth, onlyHospitalAdmin, async
   } catch (e) { console.error('POST histories error:', e); return res.status(500).json({ message: 'server error' }); }
 });
 
-// ─────────────── 사용자: 병원 목록/예약/케어일지 ───────────────
-app.get('/api/users/me/hospitals', auth, onlyUser, async (req, res) => {
-  const user = await User.findById(oid(req.jwt.uid)).lean();
-  if (!user) return res.status(404).json({ message: 'not found' });
-  let list = user.linkedHospitals || [];
-  if (!req.query.all) list = list.filter(h => h.status === 'APPROVED');
-  list.sort((a, b) => {
-    const aa = a.linkedAt || a.requestedAt || new Date(0);
-    const bb = b.linkedAt || b.requestedAt || new Date(0);
-    return new Date(bb) - new Date(aa);
-  });
-  const data = list.map(x => ({
-    hospitalId: String(x.hospitalId ?? ''),
-    hospitalName: x.hospitalName || '',
-    linkedAt: x.linkedAt || x.requestedAt || user.updatedAt,
-  }));
-  return res.json({ data });
+// ======================================================================
+// ─────────────── 병원관리자: 케어일지 목록/등록 ───────────────
+// ======================================================================
+
+app.get('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const keyword = (req.query.keyword || '').toString().trim();
+    const sortKey = (req.query.sort || 'dateDesc').toString();
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
+    const skip  = (page - 1) * limit;
+
+    const q = { hospitalId: oid(req.jwt.uid) };
+    if (keyword) {
+      const rx = new RegExp(keyword, 'i');
+      q.$or = [{ memo: rx }];
+    }
+    const sort = sortKey === 'dateAsc' ? 1 : -1;
+
+    const [items, total] = await Promise.all([
+      PetCare.find(q).sort({ dateTime: sort, createdAt: sort }).skip(skip).limit(limit).lean(),
+      PetCare.countDocuments(q),
+    ]);
+    const data = items.map(d => ({
+      _id: d._id,
+      date: d.date || '',
+      time: d.time || '',
+      dateTime: d.dateTime,
+      memo: d.memo || '',
+      imageUrl: (d.images && d.images.length) ? d.images[0] : '',
+      images: d.images || [],
+    }));
+    return res.json({ data, paging: { total, page, limit } });
+  } catch (e) { console.error('GET pet-care error:', e); return res.status(500).json({ message: 'server error' }); }
 });
 
-// ─────────────── 건강관리(헬스) API (USER 전용) ───────────────
-// ======================================================================
-// 특정 시각 HealthRecord(사용자 문서 내 chart 동시 삭제)
-// ======================================================================
+app.post('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, uploadLimiter, upload.array('images', 10), async (req, res) => {
+  try {
+    const admin = await HospitalUser.findById(oid(req.jwt.uid)).lean();
+    if (!admin) return res.status(404).json({ message: 'hospital not found' });
+    const date = (req.body.date || '').toString().trim();
+    const time = (req.body.time || '').toString().trim();
+    const memo = (req.body.memo || '').toString().trim();
+    if (!date || !time) return res.status(400).json({ message: 'date/time required' });
 
+    const urls = (req.files || []).map(f => publicUrl(req, `/uploads/pet-care/${path.basename(f.path)}`));
+
+    // 서울 타임존을 고려한 날짜 파싱은 클라이언트에서 ISO로 보내는 것이 제일 안전
+    const dt = new Date(`${date}T${time}:00`);
+    const doc = await PetCare.create({
+      hospitalId: oid(req.jwt.uid),
+      hospitalName: admin.hospitalName || '',
+      createdBy: oid(req.jwt.uid),
+      date, time, dateTime: isNaN(dt.getTime()) ? new Date() : dt,
+      memo,
+      images: urls,
+    });
+    const created = doc.toJSON();
+
+    // 이 병원과 연동(APPROVED)된 모든 사용자에게 알림
+    const approvedUsers = await User.find({
+      linkedHospitals: { $elemMatch: { hospitalId: oid(req.jwt.uid), status: 'APPROVED' } }
+    }).select('_id').lean();
+
+    await pushNotificationMany({
+      userIds: approvedUsers.map(u => u._id),
+      hospitalId: oid(req.jwt.uid),
+      hospitalName: admin.hospitalName || '',
+      type: 'PET_CARE_POSTED',
+      title: '새 반려 일지가 올라왔어요',
+      message: memo ? memo.slice(0, 80) : '이미지/메모가 등록되었습니다.',
+      meta: { petCareId: doc._id, imageUrl: urls[0] || '' }
+    });
+
+    return res.status(201).json({
+      data: {
+        _id: created._id,
+        date: created.date,
+        time: created.time,
+        dateTime: created.dateTime,
+        memo: created.memo,
+        imageUrl: (created.images && created.images.length) ? created.images[0] : '',
+        images: created.images || [],
+      }
+    });
+  } catch (e) {
+    console.error('POST pet-care error:', e);
+    return res.status(500).json({ message: e?.message || 'server error' });
+  }
+});
+
+// ───────────────병원 예약 메타/신청 ───────────────
+
+app.get('/api/hospitals/:hospitalId/appointment-meta', async (req, res) => {
+  const { hospitalId } = req.params;
+  const meta = await HospitalMeta.findOne({ hospitalId: oid(hospitalId) }).lean();
+  const servicesDefault = ['일반진료','건강검진','종합백신','심장사상충','치석제거'];
+  const doctorsDefault  = [{ id: 'default', name: '김철수 원장' }];
+  if (!meta) {
+    const h = await HospitalUser.findById(oid(hospitalId)).lean();
+    return res.json({
+      hospitalId,
+      hospitalName: h?.hospitalName || '',
+      notice: '',
+      services: servicesDefault,
+      doctors: doctorsDefault
+    });
+  }
+  res.json({
+    hospitalId,
+    hospitalName: meta.hospitalName || '',
+    notice: meta.notice || '',
+    services: (meta.services && meta.services.length) ? meta.services : servicesDefault,
+    doctors:  (meta.doctors && meta.doctors.length)   ? meta.doctors  : doctorsDefault
+  });
+});
+
+app.put('/api/hospitals/:hospitalId/appointment-meta', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    if (String(req.params.hospitalId) !== String(req.jwt.uid)) return res.status(403).json({ message: 'forbidden' });
+    const { services, doctors, notice } = req.body || {};
+    const h = await HospitalUser.findById(oid(req.jwt.uid)).lean();
+    const doc = await HospitalMeta.findOneAndUpdate(
+      { hospitalId: oid(req.jwt.uid) },
+      {
+        $set: {
+          hospitalId: oid(req.jwt.uid),
+          hospitalName: h?.hospitalName || '',
+          notice: (notice || '').toString(),
+          services: Array.isArray(services) ? services : undefined,
+          doctors:  Array.isArray(doctors)  ? doctors  : undefined,
+        }
+      },
+      { new: true, upsert: true }
+    ).lean();
+    res.json({ ok: true, meta: doc });
+  } catch (e) { console.error('PUT meta error:', e); res.status(500).json({ message: 'server error' }); }
+});
+
+app.post('/api/hospitals/:hospitalId/appointments/request', auth, onlyUser, async (req, res) => {
+  try {
+    const { hospitalId } = req.params;
+    const { hospitalName, service, doctorName, date, time, visitDateTime, userName, petName } = req.body || {};
+    if (!service || !doctorName || !date || !time) return res.status(400).json({ message: 'missing fields' });
+
+    const me = await User.findById(oid(req.jwt.uid)).lean();
+    const link = (me?.linkedHospitals || []).find(h => String(h.hospitalId) === String(hospitalId));
+    if (!link || link.status !== 'APPROVED') return res.status(403).json({ message: 'link to hospital required (APPROVED)' });
+
+    const h = await HospitalUser.findById(oid(hospitalId)).lean();
+    if (!h) return res.status(404).json({ message: 'hospital not found' });
+
+    const vdt = visitDateTime ? new Date(visitDateTime) : new Date(`${date}T${time}:00`);
+    const cleanedUserName = (userName || '').trim();
+    const finalUserName = cleanedUserName && cleanedUserName !== '사용자' ? cleanedUserName : (me?.name || '');
+    const cleanedPetName = (petName || '').trim();
+    const finalPetName = cleanedPetName && cleanedPetName !== '(미입력)' ? cleanedPetName : (me?.petProfile?.name || '');
+
+    const appt = await Appointment.create({
+      hospitalId: oid(hospitalId),
+      hospitalName: hospitalName || h.hospitalName || '',
+      userId: oid(req.jwt.uid),
+      userName: finalUserName,
+      petName:  finalPetName,
+      service, doctorName, date, time,
+      visitDateTime: vdt,
+      status: 'PENDING'
+    });
+
+    await UserAppointment.create({
+      userId: oid(req.jwt.uid),
+      originAppointmentId: appt._id,
+      hospitalId: oid(hospitalId),
+      hospitalName: hospitalName || h.hospitalName || '',
+      userName: finalUserName,
+      petName:  finalPetName,
+      service, doctorName, date, time,
+      visitDateTime: vdt,
+      status: 'PENDING'
+    });
+
+    res.status(201).json({ ok: true, appointmentId: appt._id });
+  } catch (e) { console.error('appointment request error:', e); res.status(500).json({ message: 'server error' }); }
+});
+
+// ─────────────── 병원관리자: 공지 목록/등록 ───────────────
+
+app.get('/api/hospital-admin/notices', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const hid = oid(req.query.hospitalId || req.jwt.uid);
+    const list = await HospitalNotice.find({ hospitalId: hid })
+      .sort({ createdAt: -1 })
+      .select('_id title content createdAt')  // 필요한 필드만
+      .lean();
+
+    // 플러터 파서가 배열/객체 둘 다 처리하므로 객체로 통일
+    return res.json({ data: list.map(n => ({
+      id: n._id,
+      _id: n._id,
+      title: n.title,
+      content: n.content,
+      createdAt: n.createdAt,
+    })) });
+  } catch (e) {
+    console.error('GET /api/hospital-admin/notices error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+});
+
+app.post('/api/hospital-admin/notices', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { title, content } = req.body || {};
+    const hid = oid(req.body?.hospitalId || req.jwt.uid);
+    if (!title || !content) return res.status(400).json({ message: 'title/content required' });
+
+    const h = await HospitalUser.findById(hid).lean();
+    const hospitalName = h?.hospitalName || '';
+
+    const doc = await HospitalNotice.create({
+      hospitalId: hid,
+      hospitalName,
+      title: String(title).trim(),
+      content: String(content).trim(),
+      createdBy: oid(req.jwt.uid),
+    });
+
+
+    const approvedUsers = await User.find({
+      linkedHospitals: { $elemMatch: { hospitalId: hid, status: 'APPROVED' } }
+    }).select('_id').lean();
+
+    await pushNotificationMany({
+      userIds: approvedUsers.map(u => u._id),
+      hospitalId: hid,
+      hospitalName,
+      type: 'HOSPITAL_NOTICE',
+      title: `[공지] ${doc.title}`.slice(0, 40),
+      message: doc.content.slice(0, 120),
+      meta: { noticeId: doc._id }
+    });
+
+    return res.status(201).json({
+      data: {
+        id: doc._id,
+        _id: doc._id,
+        title: doc.title,
+        content: doc.content,
+        createdAt: doc.createdAt,
+      }
+    });
+  } catch (e) {
+    console.error('POST /api/hospital-admin/notices error:', e);
+    return res.status(500).json({ message: 'server error' });
+  }
+});
+
+app.get('/api/hospitals/:hospitalId/admin/summary', async (req, res) => {
+  try {
+    const h = await HospitalUser.findById(oid(req.params.hospitalId)).lean();
+    if (!h) return res.status(404).json({ message: 'hospital not found' });
+    const doctorName = (h.hospitalProfile?.doctorName || h.name || '').trim() || '김철수 원장';
+    res.json({ doctorName });
+  } catch (e) {
+    console.error('admin summary error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+
+
+
+
+// ======================================================================
+// ─────────────── 건강관리 server───────────────
+// ======================================================================
 
 app.post('/users/me/health-record', auth, onlyUser, async (req, res) => {
   try {
@@ -1051,11 +1600,7 @@ app.delete('/users/health-record', auth, onlyUser, async (req, res) => {
   }
 });
 
-
-// ======================================================================
 // ✅✅✅ 일기(Diary) CRUD API
-// ======================================================================
-
 // [GET] 내 모든 일기 목록 조회
 app.get('/diaries', auth, onlyUser, async (req, res) => {
   try {
@@ -1145,13 +1690,7 @@ app.delete('/diaries/:id', auth, onlyUser, async (req, res) => {
   }
 });
 
-
-// ======================================================================
 // ✅✅✅ 복약 알림(Alarms) CRUD API
-// - repeatDays: string[] (예: ['Mon','Thu'])
-// - snoozeMinutes: number | null
-// ======================================================================
-
 // [GET] 내 모든 알림 목록 조회
 app.get('/users/me/alarms', auth, onlyUser, async (req, res) => {
   try {
@@ -1240,273 +1779,72 @@ app.delete('/users/me/alarms/:id', auth, onlyUser, async (req, res) => {
 });
 
 
-// ─────────────── 병원관리자: 케어일지 목록/등록 ───────────────
-app.get('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, async (req, res) => {
+
+
+
+
+
+
+// ======================================================================
+// ─────────────── 사용자 server ───────────────
+// ======================================================================
+
+app.get('/api/users/me/appointments', auth, onlyUser, async (req, res) => {
   try {
-    const keyword = (req.query.keyword || '').toString().trim();
-    const sortKey = (req.query.sort || 'dateDesc').toString();
-    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const me = await User.findById(oid(req.jwt.uid), { name:1, petProfile:1 }).lean();
+    const q = { userId: oid(req.jwt.uid) };
+    if (req.query.hospitalId) q.hospitalId = oid(req.query.hospitalId);
+    if (req.query.month) {
+      const [yy, mm] = String(req.query.month).split('-').map(Number);
+      if (yy && mm) {
+        const start = new Date(yy, mm - 1, 1, 0, 0, 0);
+        const end   = new Date(yy, mm, 1, 0, 0, 0);
+        q.visitDateTime = { $gte: start, $lt: end };
+      }
+    }
+
+    const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
     const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
     const skip  = (page - 1) * limit;
 
-    const q = { hospitalId: oid(req.jwt.uid) };
-    if (keyword) {
-      const rx = new RegExp(keyword, 'i');
-      q.$or = [{ memo: rx }];
+    let list = await UserAppointment.find(q).sort({ visitDateTime: 1 }).skip(skip).limit(limit).lean();
+    const total = await UserAppointment.countDocuments(q);
+
+    list = list.map(a => ({ ...a, userName: a.userName || me?.name || '', petName: a.petName || me?.petProfile?.name || '' }));
+
+    // 과거 호환
+    if (!list.length) {
+      const hospitalList = await Appointment.find({ userId: oid(req.jwt.uid) }).sort({ visitDateTime: 1 }).skip(skip).limit(limit).lean();
+      const mapped = hospitalList.map(a => ({
+        userId: a.userId, hospitalId: a.hospitalId, hospitalName: a.hospitalName,
+        userName: a.userName || me?.name || '', petName: a.petName || me?.petProfile?.name || '',
+        service: a.service, doctorName: a.doctorName, date: a.date, time: a.time,
+        visitDateTime: a.visitDateTime, status: a.status,
+      }));
+      return res.json({ data: mapped, paging: { total: await Appointment.countDocuments({ userId: oid(req.jwt.uid) }), page, limit } });
     }
-    const sort = sortKey === 'dateAsc' ? 1 : -1;
 
-    const [items, total] = await Promise.all([
-      PetCare.find(q).sort({ dateTime: sort, createdAt: sort }).skip(skip).limit(limit).lean(),
-      PetCare.countDocuments(q),
-    ]);
-    const data = items.map(d => ({
-      _id: d._id,
-      date: d.date || '',
-      time: d.time || '',
-      dateTime: d.dateTime,
-      memo: d.memo || '',
-      imageUrl: (d.images && d.images.length) ? d.images[0] : '',
-      images: d.images || [],
-    }));
-    return res.json({ data, paging: { total, page, limit } });
-  } catch (e) { console.error('GET pet-care error:', e); return res.status(500).json({ message: 'server error' }); }
+    res.json({ data: list, paging: { total, page, limit } });
+  } catch (e) { console.error('get user appointments error:', e); res.status(500).json({ message: 'server error' }); }
 });
 
-app.post('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, uploadLimiter, upload.array('images', 10), async (req, res) => {
-  try {
-    const admin = await HospitalUser.findById(oid(req.jwt.uid)).lean();
-    if (!admin) return res.status(404).json({ message: 'hospital not found' });
-    const date = (req.body.date || '').toString().trim();
-    const time = (req.body.time || '').toString().trim();
-    const memo = (req.body.memo || '').toString().trim();
-    if (!date || !time) return res.status(400).json({ message: 'date/time required' });
-
-    const urls = (req.files || []).map(f => publicUrl(req, `/uploads/pet-care/${path.basename(f.path)}`));
-
-    // 서울 타임존을 고려한 날짜 파싱은 클라이언트에서 ISO로 보내는 것이 제일 안전
-    const dt = new Date(`${date}T${time}:00`);
-    const doc = await PetCare.create({
-      hospitalId: oid(req.jwt.uid),
-      hospitalName: admin.hospitalName || '',
-      createdBy: oid(req.jwt.uid),
-      date, time, dateTime: isNaN(dt.getTime()) ? new Date() : dt,
-      memo,
-      images: urls,
-    });
-    const created = doc.toJSON();
-
-    // 이 병원과 연동(APPROVED)된 모든 사용자에게 알림
-    const approvedUsers = await User.find({
-      linkedHospitals: { $elemMatch: { hospitalId: oid(req.jwt.uid), status: 'APPROVED' } }
-    }).select('_id').lean();
-
-    await pushNotificationMany({
-      userIds: approvedUsers.map(u => u._id),
-      hospitalId: oid(req.jwt.uid),
-      hospitalName: admin.hospitalName || '',
-      type: 'PET_CARE_POSTED',
-      title: '새 반려 일지가 올라왔어요',
-      message: memo ? memo.slice(0, 80) : '이미지/메모가 등록되었습니다.',
-      meta: { petCareId: doc._id, imageUrl: urls[0] || '' }
-    });
-
-    return res.status(201).json({
-      data: {
-        _id: created._id,
-        date: created.date,
-        time: created.time,
-        dateTime: created.dateTime,
-        memo: created.memo,
-        imageUrl: (created.images && created.images.length) ? created.images[0] : '',
-        images: created.images || [],
-      }
-    });
-  } catch (e) {
-    console.error('POST pet-care error:', e);
-    return res.status(500).json({ message: e?.message || 'server error' });
-  }
-});
-
-// ─────────────── 예약 메타/신청 ───────────────
-app.get('/api/hospitals/:hospitalId/appointment-meta', async (req, res) => {
-  const { hospitalId } = req.params;
-  const meta = await HospitalMeta.findOne({ hospitalId: oid(hospitalId) }).lean();
-  const servicesDefault = ['일반진료','건강검진','종합백신','심장사상충','치석제거'];
-  const doctorsDefault  = [{ id: 'default', name: '김철수 원장' }];
-  if (!meta) {
-    const h = await HospitalUser.findById(oid(hospitalId)).lean();
-    return res.json({
-      hospitalId,
-      hospitalName: h?.hospitalName || '',
-      notice: '',
-      services: servicesDefault,
-      doctors: doctorsDefault
-    });
-  }
-  res.json({
-    hospitalId,
-    hospitalName: meta.hospitalName || '',
-    notice: meta.notice || '',
-    services: (meta.services && meta.services.length) ? meta.services : servicesDefault,
-    doctors:  (meta.doctors && meta.doctors.length)   ? meta.doctors  : doctorsDefault
+// ─────────────── 사용자: 병원 목록/예약/케어일지 ───────────────
+app.get('/api/users/me/hospitals', auth, onlyUser, async (req, res) => {
+  const user = await User.findById(oid(req.jwt.uid)).lean();
+  if (!user) return res.status(404).json({ message: 'not found' });
+  let list = user.linkedHospitals || [];
+  if (!req.query.all) list = list.filter(h => h.status === 'APPROVED');
+  list.sort((a, b) => {
+    const aa = a.linkedAt || a.requestedAt || new Date(0);
+    const bb = b.linkedAt || b.requestedAt || new Date(0);
+    return new Date(bb) - new Date(aa);
   });
-});
-
-app.put('/api/hospitals/:hospitalId/appointment-meta', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    if (String(req.params.hospitalId) !== String(req.jwt.uid)) return res.status(403).json({ message: 'forbidden' });
-    const { services, doctors, notice } = req.body || {};
-    const h = await HospitalUser.findById(oid(req.jwt.uid)).lean();
-    const doc = await HospitalMeta.findOneAndUpdate(
-      { hospitalId: oid(req.jwt.uid) },
-      {
-        $set: {
-          hospitalId: oid(req.jwt.uid),
-          hospitalName: h?.hospitalName || '',
-          notice: (notice || '').toString(),
-          services: Array.isArray(services) ? services : undefined,
-          doctors:  Array.isArray(doctors)  ? doctors  : undefined,
-        }
-      },
-      { new: true, upsert: true }
-    ).lean();
-    res.json({ ok: true, meta: doc });
-  } catch (e) { console.error('PUT meta error:', e); res.status(500).json({ message: 'server error' }); }
-});
-
-app.post('/api/hospitals/:hospitalId/appointments/request', auth, onlyUser, async (req, res) => {
-  try {
-    const { hospitalId } = req.params;
-    const { hospitalName, service, doctorName, date, time, visitDateTime, userName, petName } = req.body || {};
-    if (!service || !doctorName || !date || !time) return res.status(400).json({ message: 'missing fields' });
-
-    const me = await User.findById(oid(req.jwt.uid)).lean();
-    const link = (me?.linkedHospitals || []).find(h => String(h.hospitalId) === String(hospitalId));
-    if (!link || link.status !== 'APPROVED') return res.status(403).json({ message: 'link to hospital required (APPROVED)' });
-
-    const h = await HospitalUser.findById(oid(hospitalId)).lean();
-    if (!h) return res.status(404).json({ message: 'hospital not found' });
-
-    const vdt = visitDateTime ? new Date(visitDateTime) : new Date(`${date}T${time}:00`);
-    const cleanedUserName = (userName || '').trim();
-    const finalUserName = cleanedUserName && cleanedUserName !== '사용자' ? cleanedUserName : (me?.name || '');
-    const cleanedPetName = (petName || '').trim();
-    const finalPetName = cleanedPetName && cleanedPetName !== '(미입력)' ? cleanedPetName : (me?.petProfile?.name || '');
-
-    const appt = await Appointment.create({
-      hospitalId: oid(hospitalId),
-      hospitalName: hospitalName || h.hospitalName || '',
-      userId: oid(req.jwt.uid),
-      userName: finalUserName,
-      petName:  finalPetName,
-      service, doctorName, date, time,
-      visitDateTime: vdt,
-      status: 'PENDING'
-    });
-
-    await UserAppointment.create({
-      userId: oid(req.jwt.uid),
-      originAppointmentId: appt._id,
-      hospitalId: oid(hospitalId),
-      hospitalName: hospitalName || h.hospitalName || '',
-      userName: finalUserName,
-      petName:  finalPetName,
-      service, doctorName, date, time,
-      visitDateTime: vdt,
-      status: 'PENDING'
-    });
-
-    res.status(201).json({ ok: true, appointmentId: appt._id });
-  } catch (e) { console.error('appointment request error:', e); res.status(500).json({ message: 'server error' }); }
-});
-
-// ─────────────── 병원관리자: 공지 목록/등록 ───────────────
-
-// GET /api/hospital-admin/notices?hospitalId=OPTIONAL
-// 플러터가 병원 ID를 넘길 수도 있어서 호환. 없으면 내 병원(req.jwt.uid)
-app.get('/api/hospital-admin/notices', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    const hid = oid(req.query.hospitalId || req.jwt.uid);
-    const list = await HospitalNotice.find({ hospitalId: hid })
-      .sort({ createdAt: -1 })
-      .select('_id title content createdAt')  // 필요한 필드만
-      .lean();
-
-    // 플러터 파서가 배열/객체 둘 다 처리하므로 객체로 통일
-    return res.json({ data: list.map(n => ({
-      id: n._id,
-      _id: n._id,
-      title: n.title,
-      content: n.content,
-      createdAt: n.createdAt,
-    })) });
-  } catch (e) {
-    console.error('GET /api/hospital-admin/notices error:', e);
-    return res.status(500).json({ message: 'server error' });
-  }
-});
-
-// POST /api/hospital-admin/notices
-// body: { title, content, hospitalId? }
-app.post('/api/hospital-admin/notices', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    const { title, content } = req.body || {};
-    const hid = oid(req.body?.hospitalId || req.jwt.uid);
-    if (!title || !content) return res.status(400).json({ message: 'title/content required' });
-
-    const h = await HospitalUser.findById(hid).lean();
-    const hospitalName = h?.hospitalName || '';
-
-    const doc = await HospitalNotice.create({
-      hospitalId: hid,
-      hospitalName,
-      title: String(title).trim(),
-      content: String(content).trim(),
-      createdBy: oid(req.jwt.uid),
-    });
-
-    // 이 병원과 연동(APPROVED)된 모든 사용자에게 알림
-    const approvedUsers = await User.find({
-      linkedHospitals: { $elemMatch: { hospitalId: hid, status: 'APPROVED' } }
-    }).select('_id').lean();
-
-    await pushNotificationMany({
-      userIds: approvedUsers.map(u => u._id),
-      hospitalId: hid,
-      hospitalName,
-      type: 'HOSPITAL_NOTICE',
-      title: `[공지] ${doc.title}`.slice(0, 40),
-      message: doc.content.slice(0, 120),
-      meta: { noticeId: doc._id }
-    });
-
-    return res.status(201).json({
-      data: {
-        id: doc._id,
-        _id: doc._id,
-        title: doc.title,
-        content: doc.content,
-        createdAt: doc.createdAt,
-      }
-    });
-  } catch (e) {
-    console.error('POST /api/hospital-admin/notices error:', e);
-    return res.status(500).json({ message: 'server error' });
-  }
-});
-
-// 병원(관리자) 요약: 의사/원장이름 등
-app.get('/api/hospitals/:hospitalId/admin/summary', async (req, res) => {
-  try {
-    const h = await HospitalUser.findById(oid(req.params.hospitalId)).lean();
-    if (!h) return res.status(404).json({ message: 'hospital not found' });
-    const doctorName = (h.hospitalProfile?.doctorName || h.name || '').trim() || '김철수 원장';
-    res.json({ doctorName });
-  } catch (e) {
-    console.error('admin summary error:', e);
-    res.status(500).json({ message: 'server error' });
-  }
+  const data = list.map(x => ({
+    hospitalId: String(x.hospitalId ?? ''),
+    hospitalName: x.hospitalName || '',
+    linkedAt: x.linkedAt || x.requestedAt || user.updatedAt,
+  }));
+  return res.json({ data });
 });
 
 // ─────────────── USER ↔ ADMIN 1:1 채팅 (Admin 측) ───────────────
@@ -1582,47 +1920,6 @@ app.post('/api/hospital-admin/chat/read-all', auth, onlyHospitalAdmin, async (re
     console.error('POST admin chat read-all error:', e);
     res.status(500).json({ message: 'server error' });
   }
-});
-
-
-// ─────────────── 사용자 예약 조회/삭제/월간 ───────────────
-app.get('/api/users/me/appointments', auth, onlyUser, async (req, res) => {
-  try {
-    const me = await User.findById(oid(req.jwt.uid), { name:1, petProfile:1 }).lean();
-    const q = { userId: oid(req.jwt.uid) };
-    if (req.query.hospitalId) q.hospitalId = oid(req.query.hospitalId);
-    if (req.query.month) {
-      const [yy, mm] = String(req.query.month).split('-').map(Number);
-      if (yy && mm) {
-        const start = new Date(yy, mm - 1, 1, 0, 0, 0);
-        const end   = new Date(yy, mm, 1, 0, 0, 0);
-        q.visitDateTime = { $gte: start, $lt: end };
-      }
-    }
-
-    const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
-    const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
-    const skip  = (page - 1) * limit;
-
-    let list = await UserAppointment.find(q).sort({ visitDateTime: 1 }).skip(skip).limit(limit).lean();
-    const total = await UserAppointment.countDocuments(q);
-
-    list = list.map(a => ({ ...a, userName: a.userName || me?.name || '', petName: a.petName || me?.petProfile?.name || '' }));
-
-    // 과거 호환
-    if (!list.length) {
-      const hospitalList = await Appointment.find({ userId: oid(req.jwt.uid) }).sort({ visitDateTime: 1 }).skip(skip).limit(limit).lean();
-      const mapped = hospitalList.map(a => ({
-        userId: a.userId, hospitalId: a.hospitalId, hospitalName: a.hospitalName,
-        userName: a.userName || me?.name || '', petName: a.petName || me?.petProfile?.name || '',
-        service: a.service, doctorName: a.doctorName, date: a.date, time: a.time,
-        visitDateTime: a.visitDateTime, status: a.status,
-      }));
-      return res.json({ data: mapped, paging: { total: await Appointment.countDocuments({ userId: oid(req.jwt.uid) }), page, limit } });
-    }
-
-    res.json({ data: list, paging: { total, page, limit } });
-  } catch (e) { console.error('get user appointments error:', e); res.status(500).json({ message: 'server error' }); }
 });
 
 // ─────────────── USER ↔ ADMIN 1:1 채팅 (User 측) ───────────────
@@ -1756,330 +2053,8 @@ app.get('/api/users/me/appointments/monthly', auth, onlyUser, async (req, res) =
   } catch (e) { console.error('monthly user appts error:', e); res.status(500).json({ message: 'server error' }); }
 });
 
-// ─────────────── 사용자: 케어일지 보기 ───────────────
-app.get('/api/users/me/pet-care', auth, onlyUser, async (req, res) => {
-  try {
-    const { hospitalId, keyword = '', sort = 'dateDesc' } = req.query;
-    if (!hospitalId) return res.status(400).json({ message: 'hospitalId required' });
-
-    const me = await User.findById(oid(req.jwt.uid), { linkedHospitals: 1 }).lean();
-    const link = (me?.linkedHospitals || []).find(h => String(h.hospitalId) === String(hospitalId) && h.status === 'APPROVED');
-    if (!link) return res.status(403).json({ message: 'link to hospital required (APPROVED)' });
-
-    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-    const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
-    const skip  = (page - 1) * limit;
-
-    const q = { hospitalId: oid(hospitalId) };
-    if (String(keyword).trim()) {
-      const rx = new RegExp(String(keyword).trim(), 'i');
-      q.$or = [{ memo: rx }];
-    }
-    const s = sort === 'dateAsc' ? 1 : -1;
-
-    const [items, total] = await Promise.all([
-      PetCare.find(q).sort({ dateTime: s, createdAt: s }).skip(skip).limit(limit).lean(),
-      PetCare.countDocuments(q),
-    ]);
-
-    const data = items.map(d => ({
-      _id: d._id, date: d.date || '', time: d.time || '', dateTime: d.dateTime, memo: d.memo || '',
-      imageUrl: (d.images && d.images.length) ? d.images[0] : '', images: d.images || [],
-    }));
-    res.json({ data, paging: { total, page, limit } });
-  } catch (e) { console.error('GET /api/users/me/pet-care error:', e); res.status(500).json({ message: 'server error' }); }
-});
-
-// ─────────────── 병원관리자: 예약함/승인/거절 ───────────────
-app.get('/api/hospital-admin/appointments', auth, onlyHospitalAdmin, async (req, res) => {
-  const status = (req.query.status || '').toString().toUpperCase();
-  const order  = (req.query.order || 'desc').toString().toLowerCase();
-  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-  const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
-  const skip  = (page - 1) * limit;
-
-  const q = { hospitalId: oid(req.jwt.uid) };
-  if (['PENDING','APPROVED','REJECTED','CANCELED'].includes(status)) q.status = status;
-  const sort = order === 'asc' ? 1 : -1;
-
-  const [items, total] = await Promise.all([
-    Appointment.find(q).sort({ createdAt: sort }).skip(skip).limit(limit).lean(),
-    Appointment.countDocuments(q),
-  ]);
-  res.json({ data: items, paging: { total, page, limit } });
-});
-
-app.post('/api/hospital-admin/appointments/:id/approve', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    const appt = await Appointment.findById(oid(req.params.id));
-    if (!appt) return res.status(404).json({ message: 'not found' });
-    if (String(appt.hospitalId) !== String(req.jwt.uid)) return res.status(403).json({ message: 'forbidden' });
-    if (appt.status !== 'PENDING') return res.status(409).json({ message: 'already decided' });
-    appt.status = 'APPROVED';
-    appt.decidedAt = new Date();
-    appt.decidedBy = oid(req.jwt.uid);
-    await appt.save();
-    await UserAppointment.updateOne({ originAppointmentId: appt._id }, { $set: { status: 'APPROVED' } });
-
-// ✅ pushNotificationOne 추가 (return 전에)
-await pushNotificationOne({
-  userId: appt.userId,
-  hospitalId: appt.hospitalId,
-  hospitalName: appt.hospitalName || '',
-  type: 'APPOINTMENT_APPROVED',
-  title: '진료 예약 승인',
-  message: `${appt.date} ${appt.time} · ${appt.service} (${appt.doctorName || '담당의'})`,
-  meta: { appointmentId: appt._id }
-});
-
-    res.json({ ok: true });
-  } catch (e) { console.error('approve appt error:', e); res.status(500).json({ message: 'server error' }); }
-});
-
-app.post('/api/hospital-admin/appointments/:id/reject', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    const appt = await Appointment.findById(oid(req.params.id));
-    if (!appt) return res.status(404).json({ message: 'not found' });
-    if (String(appt.hospitalId) !== String(req.jwt.uid)) return res.status(403).json({ message: 'forbidden' });
-    if (appt.status !== 'PENDING') return res.status(409).json({ message: 'already decided' });
-    appt.status = 'REJECTED';
-    appt.decidedAt = new Date();
-    appt.decidedBy = oid(req.jwt.uid);
-    await appt.save();
-    await UserAppointment.updateOne({ originAppointmentId: appt._id }, { $set: { status: 'REJECTED' } });
-// 거절 처리 부분도 동일하게 res.json 전에
-await pushNotificationOne({
-  userId: appt.userId,
-  hospitalId: appt.hospitalId,
-  hospitalName: appt.hospitalName || '',
-  type: 'APPOINTMENT_REJECTED',
-  title: '진료 예약 거절',
-  message: `${appt.date} ${appt.time} · ${appt.service}`,
-  meta: { appointmentId: appt._id }
-});
-
-
-    res.json({ ok: true });
-  } catch (e) { console.error('reject appt error:', e); res.status(500).json({ message: 'server error' }); }
-});
-
-// 관리자: 특정 사용자와의 채팅 메시지 목록(증분)
-app.get('/api/hospital-admin/chat/messages', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    const { userId } = req.query || {};
-    if (!userId) return res.status(400).json({ message: 'userId required' });
-
-    const hid = oid(req.jwt.uid);
-    const uid = oid(userId);
-    if (!hid || !uid) return res.status(400).json({ message: 'invalid id' });
-
-    // 사용자 존재/연동 확인
-    const user = await User.findById(uid, { linkedHospitals: 1, name: 1 }).lean();
-    if (!user) return res.status(404).json({ message: 'user not found' });
-    const linked = (user.linkedHospitals || []).some(h =>
-      String(h.hospitalId) === String(hid) && h.status === 'APPROVED'
-    );
-    if (!linked) return res.status(403).json({ message: 'link to user required (APPROVED)' });
-
-    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-    const since = req.query.since ? new Date(String(req.query.since)) : null;
-
-    const q = { hospitalId: hid, userId: uid };
-    if (since && !isNaN(since.getTime())) q.createdAt = { $gt: since };
-
-    const list = await ChatMessage.find(q).sort({ createdAt: 1 }).limit(limit).lean();
-
-    // 응답 포맷은 사용자측과 동일하게
-    return res.json(list.map(m => ({
-      _id: m._id,
-      senderRole: m.senderRole,
-      senderId: m.senderId,
-      senderName: m.senderName,
-      text: m.text,
-      createdAt: m.createdAt,
-    })));
-  } catch (e) {
-    console.error('GET admin chat messages error:', e);
-    return res.status(500).json({ message: 'server error' });
-  }
-});
-
-
-// ─────────────── 사용자: 내 진료내역 ───────────────
-app.get('/api/users/me/medical-histories', auth, onlyUser, async (req, res) => {
-  try {
-    const { hospitalId, month, q } = req.query;
-
-    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-    const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
-    const skip  = (page - 1) * limit;
-
-    const find = { userId: oid(req.jwt.uid) };
-    if (hospitalId) find.hospitalId = oid(hospitalId);
-    if (month) {
-      const [yy, mm] = String(month).split('-').map(Number);
-      if (!yy || !mm) return res.status(400).json({ message: 'invalid month' });
-      const start = new Date(yy, mm - 1, 1, 0, 0, 0);
-      const end   = new Date(yy, mm,     1, 0, 0, 0);
-      find.date = { $gte: start, $lt: end };
-    }
-    if (q && String(q).trim()) {
-      const rx = new RegExp(String(q).trim(), 'i');
-      find.$or = [
-        { category: rx }, { content: rx }, { prescription: rx },
-        { howToTake: rx }, { hospitalName: rx }, { cost: rx },
-      ];
-    }
-    const [items, total] = await Promise.all([
-      MedicalHistory.find(find).sort({ date: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
-      MedicalHistory.countDocuments(find),
-    ]);
-    const data = items.map(m => ({ ...m, id: m._id }));
-    return res.json({ data, paging: { total, page, limit } });
-  } catch (e) { console.error('GET /api/users/me/medical-histories error:', e); return res.status(500).json({ message: 'server error' }); }
-});
-
-// SOS 전송(로그 저장; 추후 문자/푸시 연동 지점)
-app.post('/api/hospital-admin/sos', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    const { userId, hospitalId, message } = req.body || {};
-    if (!userId) return res.status(400).json({ message: 'userId required' });
-
-    const user = await User.findById(oid(userId)).lean();
-    if (!user) return res.status(404).json({ message: 'user not found' });
-
-    // 병원 ID/이름 확정
-    const hid = oid(hospitalId || req.jwt.uid);
-    let hospitalName = '';
-    const approved = (user.linkedHospitals || []).find(h =>
-      String(h.hospitalId) === String(hid) && h.status === 'APPROVED'
-    );
-    if (approved) hospitalName = approved.hospitalName || '';
-
-    const log = await SosLog.create({
-      hospitalId: hid,
-      hospitalName,
-      userId: user._id,
-      userName: user.name || '',
-      petName: user.petProfile?.name || '',
-      message: (message || '').toString(),
-    });
-
-await pushNotificationOne({
-  userId: user._id,
-  hospitalId: hid,
-  hospitalName,
-  type: 'SOS_ALERT',
-  title: '병원 긴급 알림',
-  message: (message || '').toString(),
-  meta: { sosId: log._id }
-});
-
-
-    // TODO: 문자/알림 연동 (Twilio/알리고/FCM 등)
-    return res.status(201).json({ ok: true, id: log._id });
-  } catch (e) {
-    console.error('POST /api/hospital-admin/sos error:', e);
-    return res.status(500).json({ message: 'server error' });
-  }
-});
-
-app.get('/api/hospital-admin/profile', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    const admin = await HospitalUser.findById(oid(req.jwt.uid)).lean();
-    if (!admin) return res.status(404).json({ message: 'not found' });
-    return res.json({ data: hospitalAdminProfileDto(admin) });
-  } catch (e) {
-    console.error('GET /api/hospital-admin/profile error:', e);
-    return res.status(500).json({ message: 'server error' });
-  }
-});
-
-// PATCH /api/hospital-admin/profile  → 마이페이지 우상단 편집 저장에서 사용
-app.patch('/api/hospital-admin/profile', auth, onlyHospitalAdmin, async (req, res) => {
-  try {
-    // Flutter가 보내는 바디: { name, intro } (name = 병원명)
-    // 추가 호환: { hospitalName, photoUrl, address, hours, phone }
-    const {
-      name,
-      hospitalName,
-      intro,
-      photoUrl,
-      address,
-      hours,
-      phone,
-    } = req.body || {};
-
-    const update = {
-      ...(typeof (hospitalName ?? name) === 'string'
-        ? { hospitalName: (hospitalName ?? name).trim() }
-        : {}),
-      'hospitalProfile.photoUrl': typeof photoUrl === 'string' ? photoUrl.trim() : undefined,
-      'hospitalProfile.intro':    typeof intro    === 'string' ? intro.trim()    : undefined,
-      'hospitalProfile.address':  typeof address  === 'string' ? address.trim()  : undefined,
-      'hospitalProfile.hours':    typeof hours    === 'string' ? hours.trim()    : undefined,
-      'hospitalProfile.phone':    typeof phone    === 'string' ? phone.trim()    : undefined,
-      // 프로필 변경 시 다시 승인 필요하도록 기존 로직 유지
-      approveStatus: 'PENDING',
-    };
-
-
-
-    // undefined 값은 $unset 되지 않으므로, 정의된 키만 세팅
-    Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
-
-    const admin = await HospitalUser.findByIdAndUpdate(
-      oid(req.jwt.uid),
-      { $set: update },
-      { new: true, lean: true }
-    );
-    if (!admin) return res.status(404).json({ message: 'not found' });
-
-    return res.json({ data: hospitalAdminProfileDto(admin) });
-  } catch (e) {
-    console.error('PATCH /api/hospital-admin/profile error:', e);
-    return res.status(500).json({ message: 'server error' });
-  }
-});
-
-// ✅ 병원 공지사항 단일 조회 (최신 공지 1건, 항상 200 반환)
-app.get('/api/hospitals/:hospitalId/notice', async (req, res) => {
-  try {
-    const { hospitalId } = req.params;
-
-    // 🔴 ObjectId로 조회
-    const hid = oid(hospitalId);
-
-    // 🔴 HospitalNotice에서 최신 1건
-    const last = await HospitalNotice
-      .findOne({ hospitalId: hid })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    // 🔴 보여줄 문자열 구성 (원하면 형식 조절 가능)
-    const title = (last?.title || '').toString().trim();
-    const content = (last?.content || '').toString().trim();
-
-    // 예) [공지] 타이틀 · 첫줄
-    const firstLine = content.split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
-    const notice = title || firstLine
-      ? `[공지] ${title}${firstLine ? ' · ' + firstLine : ''}`
-      : '';
-
-    // 🔴 항상 200으로 반환 (비어 있으면 빈 문자열)
-    return res.json({ notice });
-  } catch (err) {
-    console.error('GET /api/hospitals/:hospitalId/notice error:', err);
-    // 🔴 에러 상황에서도 배너 깨지지 않게 200 + 빈 문자열
-    return res.json({ notice: '' });
-  }
-});
-
-
-
 // ─────────────── 사용자 알림 API ───────────────
 
-// 미확인 개수
 app.get('/api/users/me/notifications/unread-count', auth, onlyUser, async (req, res) => {
   try {
     const q = { userId: oid(req.jwt.uid), read: false };
@@ -2140,6 +2115,81 @@ app.delete('/api/users/me/notifications/:id', auth, onlyUser, async (req, res) =
     res.status(204).send();
   } catch (e) { console.error('delete notif error:', e); res.status(500).json({ message: 'server error' }); }
 });
+
+// ─────────────── 사용자: 케어일지 보기 ───────────────
+
+app.get('/api/users/me/pet-care', auth, onlyUser, async (req, res) => {
+  try {
+    const { hospitalId, keyword = '', sort = 'dateDesc' } = req.query;
+    if (!hospitalId) return res.status(400).json({ message: 'hospitalId required' });
+
+    const me = await User.findById(oid(req.jwt.uid), { linkedHospitals: 1 }).lean();
+    const link = (me?.linkedHospitals || []).find(h => String(h.hospitalId) === String(hospitalId) && h.status === 'APPROVED');
+    if (!link) return res.status(403).json({ message: 'link to hospital required (APPROVED)' });
+
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
+    const skip  = (page - 1) * limit;
+
+    const q = { hospitalId: oid(hospitalId) };
+    if (String(keyword).trim()) {
+      const rx = new RegExp(String(keyword).trim(), 'i');
+      q.$or = [{ memo: rx }];
+    }
+    const s = sort === 'dateAsc' ? 1 : -1;
+
+    const [items, total] = await Promise.all([
+      PetCare.find(q).sort({ dateTime: s, createdAt: s }).skip(skip).limit(limit).lean(),
+      PetCare.countDocuments(q),
+    ]);
+
+    const data = items.map(d => ({
+      _id: d._id, date: d.date || '', time: d.time || '', dateTime: d.dateTime, memo: d.memo || '',
+      imageUrl: (d.images && d.images.length) ? d.images[0] : '', images: d.images || [],
+    }));
+    res.json({ data, paging: { total, page, limit } });
+  } catch (e) { console.error('GET /api/users/me/pet-care error:', e); res.status(500).json({ message: 'server error' }); }
+});
+
+// ─────────────── 사용자: 내 진료내역 ───────────────
+
+app.get('/api/users/me/medical-histories', auth, onlyUser, async (req, res) => {
+  try {
+    const { hospitalId, month, q } = req.query;
+
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
+    const skip  = (page - 1) * limit;
+
+    const find = { userId: oid(req.jwt.uid) };
+    if (hospitalId) find.hospitalId = oid(hospitalId);
+    if (month) {
+      const [yy, mm] = String(month).split('-').map(Number);
+      if (!yy || !mm) return res.status(400).json({ message: 'invalid month' });
+      const start = new Date(yy, mm - 1, 1, 0, 0, 0);
+      const end   = new Date(yy, mm,     1, 0, 0, 0);
+      find.date = { $gte: start, $lt: end };
+    }
+    if (q && String(q).trim()) {
+      const rx = new RegExp(String(q).trim(), 'i');
+      find.$or = [
+        { category: rx }, { content: rx }, { prescription: rx },
+        { howToTake: rx }, { hospitalName: rx }, { cost: rx },
+      ];
+    }
+    const [items, total] = await Promise.all([
+      MedicalHistory.find(find).sort({ date: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      MedicalHistory.countDocuments(find),
+    ]);
+    const data = items.map(m => ({ ...m, id: m._id }));
+    return res.json({ data, paging: { total, page, limit } });
+  } catch (e) { console.error('GET /api/users/me/medical-histories error:', e); return res.status(500).json({ message: 'server error' }); }
+});
+
+
+
+
+
 
 
 // ─────────────── 404 핸들러 ───────────────
