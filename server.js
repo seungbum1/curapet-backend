@@ -15,8 +15,8 @@ const PORT = process.env.PORT || 4000;                  // Render가 PORT를 주
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || '')
     .split(',').map(s => s.trim()).filter(Boolean);
 
-const MONGODB_URI_ADMIN = process.env.MONGODB_URI_ADMIN; // 예: mongodb+srv://.../admin_db
-const MONGODB_URI_USER  = process.env.MONGODB_URI_USER;  // 예: mongodb+srv://.../user_db
+const MONGODB_URI_ADMIN = strip(process.env.MONGODB_URI_ADMIN);
+const MONGODB_URI_USER  = strip(process.env.MONGODB_URI_USER);
 const UPLOAD_DIR        = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
 
 if (!MONGODB_URI_ADMIN || !MONGODB_URI_USER) {
