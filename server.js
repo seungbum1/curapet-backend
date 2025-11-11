@@ -88,7 +88,15 @@ app.use('/uploads', express.static(UP_ROOT, {
 
 // ─────────────── Multer(업로드) 설정 ───────────────
 const ALLOWED_EXTS  = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif']);
-const ALLOWED_MIMES = new Set(['image/jpeg','image/png','image/gif','image/webp','image/heic','image/heif']);
+const ALLOWED_MIMES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'application/octet-stream' // ✅ iOS가 가끔 HEIC를 이렇게 보냄
+]);
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UP_DIR),
