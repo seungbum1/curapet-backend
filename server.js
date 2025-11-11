@@ -90,6 +90,7 @@ app.use('/uploads', express.static(UP_ROOT, {
 const ALLOWED_EXTS  = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif']);
 const ALLOWED_MIMES = new Set([
   'image/jpeg',
+  'image/jpg',           // ✅ 추가
   'image/png',
   'image/gif',
   'image/webp',
@@ -97,6 +98,18 @@ const ALLOWED_MIMES = new Set([
   'image/heif',
   'application/octet-stream' // ✅ iOS가 가끔 HEIC를 이렇게 보냄
 ]);
+
+const EXT_BY_MIME = {
+  'image/jpeg': '.jpg',
+  'image/jpg':  '.jpg',
+  'image/png':  '.png',
+  'image/gif':  '.gif',
+  'image/webp': '.webp',
+  'image/heic': '.heic',
+  'image/heif': '.heif',
+  'application/octet-stream': '.heic', // ✅ iOS HEIC 추정치 (원하면 '.jpg'로 바꿔도 됨)
+};
+
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UP_DIR),
@@ -140,7 +153,6 @@ function issueToken(doc) {
 }
 
 function buildBaseUrl(req) {
-  // PUBLIC_BASE_URL 우선, 없으면 프록시 헤더 고려
   if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
   const proto = req.get('x-forwarded-proto') || req.protocol;
   const host  = req.get('x-forwarded-host') || req.get('host');
@@ -148,7 +160,7 @@ function buildBaseUrl(req) {
 }
 
 function publicUrl(req, relativePath) {
-  const base = `${req.protocol}://${req.get('host')}`;
+  const base = buildBaseUrl(req);  // ✅ 여기로 변경
   return `${base}${relativePath.startsWith('/') ? '' : '/'}${relativePath}`;
 }
 
