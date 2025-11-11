@@ -51,6 +51,12 @@ app.use(morgan('dev'));
 // const 부분
 // ────────────────────────────────────────────────────────────
 
+// 업로드 폴더 생성
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
 // CORS: 화이트리스트 → 없으면 전체 허용(개발편의)
 const allowOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
@@ -66,8 +72,9 @@ app.use(cors({
 app.use(express.json({ limit: '2mb' }));
 
 // ───────────────── 업로드 폴더 & 정적 서빙 ─────────────────
-const UP_ROOT = path.join(__dirname, 'uploads');
+const UP_ROOT = path.join(process.cwd(), 'uploads');   // ✅ 수정: __dirname → process.cwd()
 const UP_DIR  = path.join(UP_ROOT, 'pet-care');
+
 fs.mkdirSync(UP_DIR, { recursive: true });
 
 // 정적 파일 캐시(1d) + 기본 보안 옵션
@@ -133,9 +140,10 @@ function buildBaseUrl(req) {
 }
 
 function publicUrl(req, relativePath) {
-  const base = buildBaseUrl(req);
+  const base = `${req.protocol}://${req.get('host')}`;
   return `${base}${relativePath.startsWith('/') ? '' : '/'}${relativePath}`;
 }
+
 
 function auth(req, res, next) {
   try {
