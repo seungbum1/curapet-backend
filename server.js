@@ -1256,13 +1256,12 @@ app.get('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, async (req, res
       return res.status(400).json({ message: 'patientId required' });
     }
 
-    // 해당 환자가 이 병원 소속인지 검증 (보안상 매우 중요)
-    const patient = await Patient.findOne({
+    // ✅ 이 유저가 이 병원과 APPROVED 연동인지 검증
+    const patientUser = await User.findOne({
       _id: oid(patientId),
-      hospitalId: oid(req.jwt.uid),
-    }).select('_id userId').lean();
-
-    if (!patient) {
+      linkedHospitals: { $elemMatch: { hospitalId: oid(req.jwt.uid), status: 'APPROVED' } },
+    }).select('_id').lean();
+    if (!patientUser) {
       return res.status(404).json({ message: 'patient not found in this hospital' });
     }
 
@@ -1271,11 +1270,11 @@ app.get('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, async (req, res
     const skip  = (page - 1) * limit;
     const sort  = (sortKey === 'dateAsc') ? 1 : -1;
 
+    // ✅ hospitalId + patientId(User._id) 로 조회
     const q = {
       hospitalId: oid(req.jwt.uid),
-      patientId : oid(patientId),   // ▶ 핵심: 환자 기준으로 필터
+      patientId : oid(patientId),
     };
-
     if (keyword) {
       const rx = new RegExp(keyword, 'i');
       q.$or = [{ memo: rx }];
@@ -1291,14 +1290,14 @@ app.get('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, async (req, res
     ]);
 
     const data = items.map(d => ({
-      _id     : d._id,
-      date    : d.date || '',
-      time    : d.time || '',
-      dateTime: d.dateTime,
-      memo    : d.memo || '',
-      imageUrl: (d.images && d.images.length) ? d.images[0] : '',
-      images  : d.images || [],
-      patientId: d.patientId,
+      _id      : d._id,
+      date     : d.date || '',
+      time     : d.time || '',
+      dateTime : d.dateTime,
+      memo     : d.memo || '',
+      imageUrl : (d.images && d.images.length) ? d.images[0] : '',
+      images   : d.images || [],
+      patientId: d.patientId, // == User._id
     }));
 
     return res.json({ data, paging: { total, page, limit } });
@@ -1308,13 +1307,6 @@ app.get('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, async (req, res
   }
 });
 
-
-// =========================
-// [3] 병원 관리자: 특정 환자의 케어 일지 등록
-// POST /api/hospital-admin/pet-care
-// body: { patientId, date(YYYY-MM-DD), time(HH:mm), memo }
-// files: images[]
-// =========================
 app.post(
   '/api/hospital-admin/pet-care',
   auth,
@@ -1331,35 +1323,36 @@ app.post(
       if (!patientId) return res.status(400).json({ message: 'patientId required' });
       if (!date || !time) return res.status(400).json({ message: 'date/time required' });
 
-      // 병원 소속 환자인지 검증
-      const patient = await Patient.findOne({
+      // ✅ 이 유저가 이 병원과 APPROVED 연동인지 검증
+      const patientUser = await User.findOne({
         _id: oid(patientId),
-        hospitalId: oid(req.jwt.uid),
-      }).select('_id userId').lean();
-
-      if (!patient) {
+        linkedHospitals: { $elemMatch: { hospitalId: oid(req.jwt.uid), status: 'APPROVED' } },
+      }).select('_id name petProfile').lean();
+      if (!patientUser) {
         return res.status(404).json({ message: 'patient not found in this hospital' });
       }
 
-      // 파일 URL 만들기
       const urls = (req.files || []).map(f =>
         publicUrl(req, `/uploads/pet-care/${path.basename(f.path)}`)
       );
 
-      // 날짜/시간 → Date
-      // (권장: 클라에서 ISO 로 보내게 하는 것. 현 코드는 "YYYY-MM-DDTHH:mm:00" 가정.)
       const dt = new Date(`${date}T${time}:00`);
+
+      const hospitalName =
+        (await HospitalUser.findById(oid(req.jwt.uid)).select('hospitalName').lean())
+          ?.hospitalName || '';
 
       const doc = await PetCare.create({
         hospitalId  : oid(req.jwt.uid),
-        hospitalName: (await HospitalUser.findById(oid(req.jwt.uid)).select('hospitalName').lean())?.hospitalName || '',
+        hospitalName,
         createdBy   : oid(req.jwt.uid),
 
-        // ▶ 핵심: 환자 기준으로 귀속
+        // ✅ 통일: patientId = User._id, userId도 동일하게
         patientId   : oid(patientId),
-        userId      : patient.userId ? oid(patient.userId) : undefined, // 스키마에 있으면 저장 (있으면 조회/알림 최적화)
+        userId      : oid(patientId),
 
-        date, time,
+        date,
+        time,
         dateTime    : isNaN(dt.getTime()) ? new Date() : dt,
         memo,
         images      : urls,
@@ -1367,29 +1360,26 @@ app.post(
 
       const created = doc.toJSON();
 
-      // ▶ 알림: 해당 환자 "한 명"의 소유 사용자에게만
-      if (patient.userId) {
-        await pushNotificationMany({
-          userIds    : [patient.userId],
-          hospitalId : oid(req.jwt.uid),
-          hospitalName: created.hospitalName || '',
-          type       : 'PET_CARE_POSTED',
-          title      : '새 반려 일지가 올라왔어요',
-          message    : memo ? memo.slice(0, 80) : '이미지/메모가 등록되었습니다.',
-          meta       : { petCareId: doc._id, imageUrl: urls[0] || '' },
-        });
-      }
+      await pushNotificationMany({
+        userIds     : [oid(patientId)],
+        hospitalId  : oid(req.jwt.uid),
+        hospitalName,
+        type        : 'PET_CARE_POSTED',
+        title       : '새 반려 일지가 올라왔어요',
+        message     : memo ? memo.slice(0, 80) : '이미지/메모가 등록되었습니다.',
+        meta        : { petCareId: created._id, imageUrl: urls[0] || '' },
+      });
 
       return res.status(201).json({
         data: {
-          _id     : created._id,
-          date    : created.date,
-          time    : created.time,
-          dateTime: created.dateTime,
-          memo    : created.memo,
-          imageUrl: (created.images && created.images.length) ? created.images[0] : '',
-          images  : created.images || [],
-          patientId: created.patientId,
+          _id      : created._id,
+          date     : created.date,
+          time     : created.time,
+          dateTime : created.dateTime,
+          memo     : created.memo,
+          imageUrl : (created.images && created.images.length) ? created.images[0] : '',
+          images   : created.images || [],
+          patientId: created.patientId, // == User._id
         }
       });
     } catch (e) {
@@ -1398,6 +1388,7 @@ app.post(
     }
   }
 );
+
 
 // ───────────────병원 예약 메타/신청 ───────────────
 
@@ -2207,39 +2198,25 @@ app.get('/api/users/me/pet-care', auth, onlyUser, async (req, res) => {
     const { hospitalId, keyword = '', sort = 'dateDesc' } = req.query;
     if (!hospitalId) return res.status(400).json({ message: 'hospitalId required' });
 
-    // 병원과 사용자 연동(APPROVED) 확인
+    // ✅ 병원-사용자 링크(APPROVED) 확인
     const me = await User.findById(oid(req.jwt.uid), { linkedHospitals: 1 }).lean();
     const link = (me?.linkedHospitals || []).find(
       h => String(h.hospitalId) === String(hospitalId) && h.status === 'APPROVED'
     );
     if (!link) {
-      return res
-        .status(403)
-        .json({ message: 'link to hospital required (APPROVED)' });
+      return res.status(403).json({ message: 'link to hospital required (APPROVED)' });
     }
 
-    // 페이징/정렬
     const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
     const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
     const skip  = (page - 1) * limit;
     const s = (String(sort) === 'dateAsc') ? 1 : -1;
 
-    // ▶ 핵심: 이 사용자가 해당 병원에 등록해 둔 "내 환자들" 목록을 구해 그 patientId로 필터
-    const myPatients = await Patient
-      .find({ userId: oid(req.jwt.uid), hospitalId: oid(hospitalId) })
-      .select('_id')
-      .lean();
-
-    const myPatientIds = myPatients.map(p => p._id);
-    if (myPatientIds.length === 0) {
-      return res.json({ data: [], paging: { total: 0, page, limit } });
-    }
-
+    // ✅ 그냥 나의 userId(=patientId)로 조회
     const q = {
       hospitalId: oid(hospitalId),
-      patientId : { $in: myPatientIds },
+      patientId : oid(req.jwt.uid), // == User._id
     };
-
     if (String(keyword).trim()) {
       const rx = new RegExp(String(keyword).trim(), 'i');
       q.$or = [{ memo: rx }];
@@ -2262,8 +2239,7 @@ app.get('/api/users/me/pet-care', auth, onlyUser, async (req, res) => {
       memo    : d.memo || '',
       imageUrl: (d.images && d.images.length) ? d.images[0] : '',
       images  : d.images || [],
-      // (선택) 환자 식별이 필요하면 아래 필드도 프론트에 보낼 수 있음
-      patientId: d.patientId,
+      patientId: d.patientId, // == User._id
     }));
 
     res.json({ data, paging: { total, page, limit } });
@@ -2272,6 +2248,7 @@ app.get('/api/users/me/pet-care', auth, onlyUser, async (req, res) => {
     res.status(500).json({ message: 'server error' });
   }
 });
+
 
 // ─────────────── 사용자: 내 진료내역 ───────────────
 
