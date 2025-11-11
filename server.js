@@ -501,6 +501,8 @@ const petCareSchema = new mongoose.Schema({
   hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
   hospitalName: { type: String, default: '' },
   createdBy:    { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  patientId:    { type: mongoose.Schema.Types.ObjectId, required: true, index: true }, // 🔴 추가
+  userId:       { type: mongoose.Schema.Types.ObjectId, index: true },
   date:         { type: String, default: '' },  // 'YYYY-MM-DD'
   time:         { type: String, default: '' },  // 'HH:mm'
   dateTime:     { type: Date,   index: true },
@@ -1165,7 +1167,7 @@ app.get('/api/hospital-admin/patients', auth, onlyHospitalAdmin, async (req, res
     const pipeline = [
       { $unwind: '$linkedHospitals' },
       { $match: { 'linkedHospitals.hospitalId': oid(req.jwt.uid), 'linkedHospitals.status': 'APPROVED' } },
-      { $project: { _id: 0, userId: '$_id', userName: '$name', petName: '$petProfile.name' } },
+      { $project: { _id: '$_id', userId: '$_id', userName: '$name', petName: '$petProfile.name' } },
       { $skip: skip },
       { $limit: limit },
     ];
