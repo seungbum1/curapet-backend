@@ -156,23 +156,90 @@ const productSchema = new mongoose.Schema(
 );
 
 
-// ✅ [2] 주문 스키마
-const orderSchema = new mongoose.Schema(
-  {
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    products: [
-      {
-        productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-        name: String,
-        price: Number,
-        quantity: Number,
-      },
-    ],
-    totalPrice: { type: Number, required: true },
-    status: { type: String, default: '주문접수' }, // 주문접수 → 배송중 → 배송완료
+// ✅ Product 스키마
+const productSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  category: { type: String, required: true },
+  description: { type: String, required: true },
+  quantity: { type: Number, required: true },
+  price: { type: Number, required: true },
+  images: [{ type: String }],
+  reviews: [
+    {
+      userName: { type: String, required: true },
+      rating: { type: Number, required: true },
+      comment: { type: String, required: true },
+      createdAt: { type: Date, default: Date.now },
+    },
+  ],
+  averageRating: { type: Number, default: 0 },
+}, { timestamps: true });
+
+const Product = mongoose.model('Product', productSchema);
+
+// ✅ User 스키마
+const userSchema = new mongoose.Schema({
+  email:        { type: String, required: true, unique: true, index: true },
+  passwordHash: { type: String, required: true },
+  name:         { type: String, default: '' },
+  role:         { type: String, enum: ['USER'], default: 'USER', index: true },
+  birthDate:    { type: String, default: '' },
+
+  favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  cart: [
+    {
+      productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+      count: { type: Number, default: 1 },
+    },
+  ],
+  orders: [
+    {
+      productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+      name: String,
+      category: String,
+      price: Number,
+      quantity: Number,
+      image: String,
+      userName: String,
+      address: String,
+      phone: String,
+      paymentMethod: String,
+      totalAmount: Number,
+      orderedAt: { type: Date, default: Date.now },
+    },
+  ],
+}, { timestamps: true });
+
+const User = mongoose.model('User', userSchema);
+
+// ✅ Order 스키마 (통합형)
+const orderSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userName: { type: String, default: '' },
+  address: { type: String, default: '' },
+  phone: { type: String, default: '' },
+  products: [
+    {
+      productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+      name: String,
+      category: String,
+      price: Number,
+      quantity: { type: Number, default: 1 },
+      image: String,
+    },
+  ],
+  payment: {
+    method: { type: String, default: '카드결제' },
+    totalAmount: { type: Number, required: true },
   },
-  { timestamps: true }
-);
+  status: {
+    type: String,
+    enum: ['주문접수', '결제완료', '배송중', '배송완료', '주문취소'],
+    default: '주문접수',
+  },
+}, { timestamps: true });
+
+const Order = mongoose.model('Order', orderSchema);
 
 
 // ─────────────── 레이트리밋(로그인/회원가입/업로드) ───────────────
@@ -191,12 +258,16 @@ const uploadLimiter = rateLimit({
 
 const Product = adminConn.model('Product', require('./models/Product'));
 const Order   = userConn.model('Order', require('./models/Order'));
+const User    = userDB.model('User', require('./models/user'));
 
 // ✅ 라우터 불러오기
 const productRoutes = require('./routes/productRoutes')(Product);
 const orderRoutes   = require('./routes/orderRoutes')(userConn);
+const userRoutes    = require('./routes/userRoutes')(User, adminDB, userDB);
 
-
+app.use('/products', productRoutes);
+app.use('/users', userRoutes);
+app.use('/orders', orderRoutes);
 
 // ────────────────────────────────────────────────────────────
 // ─────────────── 공통 유틸 ───────────────
@@ -723,31 +794,6 @@ const healthRecordSchema = new mongoose.Schema({
 healthRecordSchema.index({ userId: 1, dateTime: -1 });
 
 const HealthRecord = userConn.model('HealthRecord', healthRecordSchema, 'health_records');
-
-// ──────────────────────────────── 상품(Product) 스키마 ────────────────────────────────
-
-
-// ──────────────────────────────── 주문(Order) 스키마 ────────────────────────────────
-const orderSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  userName: String,
-  address: String,
-  phone: String,
-  product: {
-    _id: mongoose.Schema.Types.ObjectId,
-    name: String,
-    category: String,
-    price: Number,
-    quantity: Number,
-    image: String,
-  },
-  payment: {
-    method: String,
-    totalAmount: Number,
-  },
-  status: { type: String, default: '결제완료' },
-}, { timestamps: true });
-
 
 
 
