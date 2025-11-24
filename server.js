@@ -146,40 +146,6 @@ const productSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 
-// ✅ User 스키마
-const userSchema = new mongoose.Schema({
-  email:        { type: String, required: true, unique: true, index: true },
-  passwordHash: { type: String, required: true },
-  name:         { type: String, default: '' },
-  role:         { type: String, enum: ['USER'], default: 'USER', index: true },
-  birthDate:    { type: String, default: '' },
-
-  favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
-  cart: [
-    {
-      productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
-      count: { type: Number, default: 1 },
-    },
-  ],
-  orders: [
-    {
-      productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
-      name: String,
-      category: String,
-      price: Number,
-      quantity: Number,
-      image: String,
-      userName: String,
-      address: String,
-      phone: String,
-      paymentMethod: String,
-      totalAmount: Number,
-      orderedAt: { type: Date, default: Date.now },
-    },
-  ],
-}, { timestamps: true });
-
-
 // ✅ Order 스키마 (통합형)
 const orderSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
