@@ -18,9 +18,6 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const PORT        = process.env.PORT || 4000;
 const JWT_SECRET  = process.env.JWT_SECRET;
 
-
-
-
 // ─────────────── 환경변수 필수 체크 ───────────────
 if (!MONGODB_URI) {
   console.error('❌ MONGODB_URI is required');
@@ -42,10 +39,6 @@ app.use(helmet({
 }));
 app.use(compression());
 app.use(morgan('dev'));
-
-
-
-
 
 // ────────────────────────────────────────────────────────────
 // const 부분
@@ -132,29 +125,6 @@ const upload = multer({
   }
 });
 
-// ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ
-// ✅ [1] 상품 스키마
-const productSchema = new mongoose.Schema(
-  {
-    name: { type: String, required: true },
-    category: { type: String, required: true },
-    description: { type: String, required: true },
-    quantity: { type: Number, required: true },
-    price: { type: Number, required: true },
-    images: [{ type: String }],
-    reviews: [
-      {
-        userName: { type: String, required: true },
-        rating: { type: Number, required: true },
-        comment: { type: String, required: true },
-        createdAt: { type: Date, default: Date.now },
-      },
-    ],
-    averageRating: { type: Number, default: 0 },
-  },
-  { timestamps: true }
-);
-
 
 // ✅ Product 스키마
 const productSchema = new mongoose.Schema({
@@ -175,7 +145,6 @@ const productSchema = new mongoose.Schema({
   averageRating: { type: Number, default: 0 },
 }, { timestamps: true });
 
-const Product = mongoose.model('Product', productSchema);
 
 // ✅ User 스키마
 const userSchema = new mongoose.Schema({
@@ -210,7 +179,6 @@ const userSchema = new mongoose.Schema({
   ],
 }, { timestamps: true });
 
-const User = mongoose.model('User', userSchema);
 
 // ✅ Order 스키마 (통합형)
 const orderSchema = new mongoose.Schema({
@@ -238,9 +206,6 @@ const orderSchema = new mongoose.Schema({
     default: '주문접수',
   },
 }, { timestamps: true });
-
-const Order = mongoose.model('Order', orderSchema);
-
 
 // ─────────────── 레이트리밋(로그인/회원가입/업로드) ───────────────
 const authLimiter = rateLimit({
@@ -300,17 +265,6 @@ async function deleteFilesByUrls(urls = []) {
       if (e.code !== 'ENOENT') console.warn('unlink error:', fp, e.message);
     }
   }
-}
-
-function buildBaseUrl(req) {
-  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
-  const proto = req.get('x-forwarded-proto') || req.protocol;
-  const host  = req.get('x-forwarded-host') || req.get('host');
-  return `${proto}://${host}`;
-}
-function publicUrl(req, relativePath) {
-  const base = buildBaseUrl(req);
-  return `${base}${relativePath.startsWith('/') ? '' : '/'}${relativePath}`;
 }
 
 function issueToken(doc) {
@@ -458,11 +412,6 @@ const oid = (v) => {
   try { return new mongoose.Types.ObjectId(String(v)); } catch { return null; }
 };
 
-
-
-
-
-
 // ────────────────────────────────────────────────────────────
 // ─────────────── Mongoose server───────────────
 // ────────────────────────────────────────────────────────────
@@ -481,11 +430,6 @@ adminConn.on('connected',    () => console.log('✅ adminConn -> admin_db'));
 [userConn, hospitalConn, adminConn].forEach(c =>
   c.on('error', (e) => console.error('Mongo error:', e?.message || e))
 );
-
-
-
-
-
 
 // ────────────────────────────────────────────────────────────
 // ─────────────── 스키마 server───────────────
@@ -795,10 +739,6 @@ healthRecordSchema.index({ userId: 1, dateTime: -1 });
 
 const HealthRecord = userConn.model('HealthRecord', healthRecordSchema, 'health_records');
 
-
-
-
-
 // ────────────────────────────────────────────────────────────
 // ─────────────── 모델 server ───────────────
 // ────────────────────────────────────────────────────────────
@@ -953,10 +893,6 @@ app.put('/hospital/profile', auth, onlyHospitalAdmin, async (req, res) => {
   res.json({ user: admin });
 });
 
-
-
-
-
 // ────────────────────────────────────────────────────────────
 // 병원 server
 // ────────────────────────────────────────────────────────────
@@ -996,8 +932,6 @@ await pushNotificationOne({
   message: (message || '').toString(),
   meta: { sosId: log._id }
 });
-
-
     // TODO: 문자/알림 연동 (Twilio/알리고/FCM 등)
     return res.status(201).json({ ok: true, id: log._id });
   } catch (e) {
@@ -1601,9 +1535,7 @@ app.post(
   }
 );
 
-
 // ───────────────병원 예약 메타/신청 ───────────────
-
 app.get('/api/hospitals/:hospitalId/appointment-meta', async (req, res) => {
   const { hospitalId } = req.params;
   const meta = await HospitalMeta.findOne({ hospitalId: oid(hospitalId) }).lean();
@@ -1779,10 +1711,7 @@ app.get('/api/hospitals/:hospitalId/admin/summary', async (req, res) => {
   }
 });
 
-
-
 // ──────────────────────────────── 상품(Product) 관련 API ────────────────────────────────
-
 // 상품 등록
 app.post('/api/products', async (req, res) => {
   try {
@@ -1833,10 +1762,7 @@ app.post('/api/products/:id/reviews', async (req, res) => {
   }
 });
 
-
-
 // ──────────────────────────────── 장바구니 / 찜 / 주문 관련 API ────────────────────────────────
-
 // 찜 추가
 app.post('/api/users/:userId/favorites/:productId', async (req, res) => {
   const { userId, productId } = req.params;
@@ -1883,8 +1809,6 @@ app.post('/api/users/:userId/orders', async (req, res) => {
   await order.save();
   res.json({ message: '주문 생성 완료', order });
 });
-
-
 
 // ======================================================================
 // ─────────────── 건강관리 server───────────────
@@ -2167,13 +2091,6 @@ app.delete('/users/me/alarms/:id', auth, onlyUser, async (req, res) => {
     return res.status(500).json({ message: 'Server error' });
   }
 });
-
-
-
-
-
-
-
 
 // ======================================================================
 // ─────────────── 사용자 server ───────────────
@@ -2605,9 +2522,7 @@ app.get('/api/users/me/pet-care', auth, onlyUser, async (req, res) => {
   }
 });
 
-
 // ─────────────── 사용자: 내 진료내역 ───────────────
-
 app.get('/api/users/me/medical-histories', auth, onlyUser, async (req, res) => {
   try {
     const { hospitalId, month, q } = req.query;
@@ -2642,100 +2557,42 @@ app.get('/api/users/me/medical-histories', auth, onlyUser, async (req, res) => {
 });
 
 // ----------사용자 상품 -------
-// ✅ [3] 상품 관련 API
-app.post('/api/shop/products', async (req, res) => {
-  try {
-    const product = new Product(req.body);
-    await product.save();
-    res.json({ message: '상품 등록 성공', product });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/shop/products', async (_req, res) => {
-  try {
-    const products = await Product.find().sort({ createdAt: -1 });
-    res.json(products);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/shop/products/:id', async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
-    res.json(product);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.put('/api/shop/products/:id', async (req, res) => {
-  try {
-    const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!product) return res.status(404).json({ message: '상품 없음' });
-    res.json(product);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/shop/products/:id', async (req, res) => {
-  try {
-    const deleted = await Product.findByIdAndDelete(req.params.id);
-    if (!deleted) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
-
-    if (deleted.images && deleted.images.length > 0) {
-      deleted.images.forEach((imgUrl) => {
-        const filePath = imgUrl.replace(/^https?:\/\/[^/]+/, '.');
-        fs.unlink(filePath, (err) => {
-          if (err) console.log('⚠️ 이미지 삭제 실패:', err.message);
-        });
-      });
-    }
-
-    res.json({ message: '✅ 상품 삭제 성공', deleted });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ [4] 리뷰 기능
+// ✅ 리뷰 등록
 app.post('/api/shop/products/:id/reviews', async (req, res) => {
   try {
     const { userName, rating, comment } = req.body;
     const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
+    if (!product) return res.status(404).json({ message: '상품 없음' });
 
     product.reviews.push({ userName, rating, comment, createdAt: new Date() });
     const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
     product.averageRating = total / product.reviews.length;
-
     await product.save();
+
     res.json({ message: '리뷰 등록 성공', product });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// ✅ 리뷰 삭제
 app.delete('/api/shop/products/:productId/reviews/:reviewId', async (req, res) => {
   try {
     const product = await Product.findById(req.params.productId);
-    if (!product) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
+    if (!product) return res.status(404).json({ message: '상품 없음' });
 
     product.reviews = product.reviews.filter((r) => r._id.toString() !== req.params.reviewId);
     const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
     product.averageRating = product.reviews.length ? total / product.reviews.length : 0;
     await product.save();
+
     res.json({ message: '✅ 리뷰 삭제 완료' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ [5] 주문 관련 API
+// ✅ 주문 생성
 app.post('/api/shop/orders', async (req, res) => {
   try {
     const order = new Order(req.body);
@@ -2746,6 +2603,7 @@ app.post('/api/shop/orders', async (req, res) => {
   }
 });
 
+// ✅ 주문 목록
 app.get('/api/shop/orders', async (_req, res) => {
   try {
     const orders = await Order.find().sort({ createdAt: -1 });
@@ -2755,6 +2613,7 @@ app.get('/api/shop/orders', async (_req, res) => {
   }
 });
 
+// ✅ 주문 상태 업데이트
 app.patch('/api/shop/orders/:orderId', async (req, res) => {
   try {
     const { status } = req.body;
@@ -2766,6 +2625,7 @@ app.patch('/api/shop/orders/:orderId', async (req, res) => {
   }
 });
 
+// ✅ 주문 삭제
 app.delete('/api/shop/orders/:orderId', async (req, res) => {
   try {
     const order = await Order.findByIdAndDelete(req.params.orderId);
@@ -2776,7 +2636,33 @@ app.delete('/api/shop/orders/:orderId', async (req, res) => {
   }
 });
 
+// ✅ 찜하기
+app.post('/api/shop/users/:userId/favorites/:productId', async (req, res) => {
+  const { userId, productId } = req.params;
+  const user = await User.findById(userId);
+  if (!user) return res.status(404).json({ message: '유저 없음' });
 
+  if (!user.favorites.includes(productId)) {
+    user.favorites.push(productId);
+    await user.save();
+  }
+  res.json({ message: '찜 완료', favorites: user.favorites });
+});
+
+// ✅ 장바구니 추가
+app.post('/api/shop/users/:userId/cart/:productId', async (req, res) => {
+  const { userId, productId } = req.params;
+  const { count } = req.body;
+  const user = await User.findById(userId);
+  if (!user) return res.status(404).json({ message: '유저 없음' });
+
+  const existingItem = user.cart.find(i => i.productId.toString() === productId);
+  if (existingItem) existingItem.count += count || 1;
+  else user.cart.push({ productId, count: count || 1 });
+
+  await user.save();
+  res.json({ message: '장바구니 추가 완료', cart: user.cart });
+});
 
 
 // ─────────────── 404 핸들러 ───────────────
