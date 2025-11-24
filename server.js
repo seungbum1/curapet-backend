@@ -173,7 +173,7 @@ const orderSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-const Order = userConn.model('Order', orderSchema);
+
 
 // ─────────────── 레이트리밋(로그인/회원가입/업로드) ───────────────
 const authLimiter = rateLimit({
@@ -765,7 +765,6 @@ const orderSchema = new mongoose.Schema({
   status: { type: String, default: '결제완료' },
 }, { timestamps: true });
 
-const Order = userDB.model('Order', orderSchema);
 
 
 
