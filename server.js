@@ -51,6 +51,10 @@ app.use(morgan('dev'));
 // const 부분
 // ────────────────────────────────────────────────────────────
 
+const { AdminConn, UserConn } = require('./db'); // 너희 프로젝트 연결 방식에 맞게
+const PetCareAdmin = AdminConn.model('PetCare'); // admin_db
+const PetCareUser  = UserConn.model('PetCare');  // user_db (미러)
+
 // 업로드 폴더 생성
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) {
@@ -128,6 +132,49 @@ const upload = multer({
   }
 });
 
+// ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ
+// ✅ [1] 상품 스키마
+const productSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true },
+    category: { type: String, required: true },
+    description: { type: String, required: true },
+    quantity: { type: Number, required: true },
+    price: { type: Number, required: true },
+    images: [{ type: String }],
+    reviews: [
+      {
+        userName: { type: String, required: true },
+        rating: { type: Number, required: true },
+        comment: { type: String, required: true },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+    averageRating: { type: Number, default: 0 },
+  },
+  { timestamps: true }
+);
+const Product = adminConn.model('Product', productSchema);
+
+// ✅ [2] 주문 스키마
+const orderSchema = new mongoose.Schema(
+  {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    products: [
+      {
+        productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+        name: String,
+        price: Number,
+        quantity: Number,
+      },
+    ],
+    totalPrice: { type: Number, required: true },
+    status: { type: String, default: '주문접수' }, // 주문접수 → 배송중 → 배송완료
+  },
+  { timestamps: true }
+);
+const Order = userConn.model('Order', orderSchema);
+
 // ─────────────── 레이트리밋(로그인/회원가입/업로드) ───────────────
 const authLimiter = rateLimit({
   windowMs: 10 * 60 * 1000, // 10분
@@ -142,11 +189,58 @@ const uploadLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const Product = adminConn.model('Product', require('./models/Product'));
+const Order   = userConn.model('Order', require('./models/Order'));
+
+// ✅ 라우터 불러오기
+const productRoutes = require('./routes/productRoutes')(Product);
+const orderRoutes   = require('./routes/orderRoutes')(userConn);
+
 
 
 // ────────────────────────────────────────────────────────────
 // ─────────────── 공통 유틸 ───────────────
 // ────────────────────────────────────────────────────────────
+
+// 업로드 URL -> 실제 파일 경로로 안전 변환
+function filePathFromPublicUrl(publicUrl) {
+  try {
+    const u = new URL(publicUrl);
+    // 우리 서버의 /uploads/... 만 허용
+    if (!u.pathname.startsWith('/uploads/')) return null;
+    const fp = path.join(UPLOAD_DIR, u.pathname.replace(/^\/uploads\//, ''));
+    // 디렉터리 이스케이프 방지
+    const normalized = path.normalize(fp);
+    if (!normalized.startsWith(path.normalize(UPLOAD_DIR))) return null;
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+async function deleteFilesByUrls(urls = []) {
+  for (const u of urls) {
+    const fp = filePathFromPublicUrl(u);
+    if (!fp) continue;
+    try {
+      await fs.promises.unlink(fp);
+    } catch (e) {
+      // 이미 없는 경우 등은 무시
+      if (e.code !== 'ENOENT') console.warn('unlink error:', fp, e.message);
+    }
+  }
+}
+
+function buildBaseUrl(req) {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
+  const proto = req.get('x-forwarded-proto') || req.protocol;
+  const host  = req.get('x-forwarded-host') || req.get('host');
+  return `${proto}://${host}`;
+}
+function publicUrl(req, relativePath) {
+  const base = buildBaseUrl(req);
+  return `${base}${relativePath.startsWith('/') ? '' : '/'}${relativePath}`;
+}
 
 function issueToken(doc) {
   return jwt.sign({ uid: doc._id, role: doc.role }, JWT_SECRET, { expiresIn: '7d' });
@@ -407,22 +501,55 @@ const PetProfileSchema = new mongoose.Schema(
 );
 
 const userSchema = new mongoose.Schema({
-  email:        { type: String, required: true, unique: true, index: true },
-  passwordHash: { type: String, required: true },
-  name:         { type: String, default: '' },
-  role:         { type: String, enum: ['USER'], default: 'USER', index: true },
-  birthDate:    { type: String, default: '' },
+   email:        { type: String, required: true, unique: true, index: true },
+   passwordHash: { type: String, required: true },
+   name:         { type: String, default: '' },
+   role:         { type: String, enum: ['USER'], default: 'USER', index: true },
+   birthDate:    { type: String, default: '' },
 
-  petProfile:   { type: PetProfileSchema, default: {} },
+   petProfile:   { type: PetProfileSchema, default: {} },
 
-  linkedHospitals: [{
-    hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
-    hospitalName: { type: String, default: '' },
-    status:       { type: String, enum: ['PENDING','APPROVED','REJECTED'], default: 'PENDING', index: true },
-    requestedAt:  { type: Date },
-    linkedAt:     { type: Date }
-  }],
-}, { timestamps: true });
+   favorites: [
+     { type: mongoose.Schema.Types.ObjectId, ref: 'Product' }
+   ],
+
+   cart: [
+     {
+       productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+       count: { type: Number, default: 1 },
+     },
+   ],
+
+   orders: [
+     {
+       productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+       name: String,
+       category: String,
+       price: Number,
+       quantity: Number,
+       image: String,
+       userName: String,
+       address: String,
+       phone: String,
+       paymentMethod: String,
+       totalAmount: Number,
+       orderedAt: { type: Date, default: Date.now },
+     },
+   ],
+
+   linkedHospitals: [
+     {
+       hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+       hospitalName: { type: String, default: '' },
+       status:       { type: String, enum: ['PENDING','APPROVED','REJECTED'], default: 'PENDING', index: true },
+       requestedAt:  { type: Date },
+       linkedAt:     { type: Date },
+     },
+   ],
+ }, { timestamps: true });
+
+ const User = userDB.model('User', userSchema);
+
 
 const hospitalUserSchema = new mongoose.Schema({
   email:        { type: String, required: true, unique: true, index: true },
@@ -597,6 +724,49 @@ healthRecordSchema.index({ userId: 1, dateTime: -1 });
 
 const HealthRecord = userConn.model('HealthRecord', healthRecordSchema, 'health_records');
 
+// ──────────────────────────────── 상품(Product) 스키마 ────────────────────────────────
+const productSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  category: { type: String, required: true },
+  description: { type: String, required: true },
+  quantity: { type: Number, required: true },
+  price: { type: Number, required: true },
+  images: [{ type: String }],
+  reviews: [
+    {
+      userName: { type: String, required: true },
+      rating: { type: Number, required: true },
+      comment: { type: String, required: true },
+      createdAt: { type: Date, default: Date.now },
+    },
+  ],
+  averageRating: { type: Number, default: 0 },
+}, { timestamps: true });
+
+const Product = adminDB.model('Product', productSchema);
+
+// ──────────────────────────────── 주문(Order) 스키마 ────────────────────────────────
+const orderSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userName: String,
+  address: String,
+  phone: String,
+  product: {
+    _id: mongoose.Schema.Types.ObjectId,
+    name: String,
+    category: String,
+    price: Number,
+    quantity: Number,
+    image: String,
+  },
+  payment: {
+    method: String,
+    totalAmount: Number,
+  },
+  status: { type: String, default: '결제완료' },
+}, { timestamps: true });
+
+const Order = userDB.model('Order', orderSchema);
 
 
 
@@ -620,7 +790,10 @@ const HospitalNotice = hospitalConn.model('HospitalNotice', hospitalNoticeSchema
 const ChatMessage = hospitalConn.model('ChatMessage', chatMessageSchema, 'chat_messages');
 
 
-
+// ---------------쇼핑------------------
+// ✅ 라우터 경로 등록
+app.use('/api/shop/products', productRoutes);
+app.use('/api/shop/orders', orderRoutes);
 
 
 // ────────────────────────────────────────────────────────────
@@ -1581,6 +1754,109 @@ app.get('/api/hospitals/:hospitalId/admin/summary', async (req, res) => {
 
 
 
+// ──────────────────────────────── 상품(Product) 관련 API ────────────────────────────────
+
+// 상품 등록
+app.post('/api/products', async (req, res) => {
+  try {
+    const product = new Product(req.body);
+    await product.save();
+    res.json({ message: '상품 등록 성공', product });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 상품 목록 조회
+app.get('/api/products', async (_req, res) => {
+  try {
+    const products = await Product.find().sort({ createdAt: -1 });
+    res.json(products);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 상품 단일 조회
+app.get('/api/products/:id', async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: '상품 없음' });
+    res.json(product);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 리뷰 등록
+app.post('/api/products/:id/reviews', async (req, res) => {
+  try {
+    const { userName, rating, comment } = req.body;
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: '상품 없음' });
+
+    product.reviews.push({ userName, rating, comment, createdAt: new Date() });
+    const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
+    product.averageRating = total / product.reviews.length;
+    await product.save();
+
+    res.json({ message: '리뷰 등록 성공', product });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+// ──────────────────────────────── 장바구니 / 찜 / 주문 관련 API ────────────────────────────────
+
+// 찜 추가
+app.post('/api/users/:userId/favorites/:productId', async (req, res) => {
+  const { userId, productId } = req.params;
+  const user = await User.findById(userId);
+  if (!user) return res.status(404).json({ message: '유저 없음' });
+
+  if (!user.favorites.includes(productId)) {
+    user.favorites.push(productId);
+    await user.save();
+  }
+  res.json({ message: '찜 완료', favorites: user.favorites });
+});
+
+// 장바구니 추가
+app.post('/api/users/:userId/cart/:productId', async (req, res) => {
+  const { userId, productId } = req.params;
+  const { count } = req.body;
+  const user = await User.findById(userId);
+  const product = await Product.findById(productId);
+
+  const existingItem = user.cart.find(i => i.productId.toString() === productId);
+  if (existingItem) existingItem.count += count || 1;
+  else user.cart.push({ productId, count: count || 1 });
+
+  await user.save();
+  res.json({ message: '장바구니 추가 완료', cart: user.cart });
+});
+
+// 주문 생성
+app.post('/api/users/:userId/orders', async (req, res) => {
+  const { userId } = req.params;
+  const { product, payment, userName, address, phone } = req.body;
+
+  const order = new Order({
+    userId,
+    userName,
+    address,
+    phone,
+    product,
+    payment,
+    status: '결제완료',
+  });
+
+  await order.save();
+  res.json({ message: '주문 생성 완료', order });
+});
+
 
 
 // ======================================================================
@@ -2113,6 +2389,47 @@ app.post('/api/hospitals/:hospitalId/chat/read-all', auth, onlyUser, async (req,
   }
 });
 
+app.delete('/api/hospital-admin/pet-care/:id', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 1) 삭제 대상 가져오기 + 병원 소속 검증
+    //    patient 테이블 join 없이, care 문서에 patientId가 있고 Patient에 hospitalId가 매칭되는 구조라면 아래처럼 확인:
+    const care = await PetCareAdmin.findById(id).lean();
+    if (!care) return res.status(404).json({ message: 'care not found' });
+
+    // 필수: 이 케어의 환자가 이 병원 소속인지 확인
+    const patient = await AdminConn.model('Patient')
+      .findOne({ _id: care.patientId, hospitalId: req.jwt.uid })
+      .select('_id')
+      .lean();
+    if (!patient) return res.status(403).json({ message: 'forbidden: not your patient' });
+
+    // 2) 파일 삭제 (images 배열/단일 imageUrl 모두 대응)
+    const urls = [];
+    if (Array.isArray(care.images)) urls.push(...care.images.filter(Boolean));
+    if (care.imageUrl) urls.push(care.imageUrl);
+    await deleteFilesByUrls(urls);
+
+    // 3) admin_db에서 문서 삭제
+    await PetCareAdmin.deleteOne({ _id: id });
+
+    // 4) user_db 미러 삭제 (최대한 동일 _id 사용 가정)
+    try {
+      await PetCareUser.deleteOne({ _id: id });
+      // 만약 다른 키로 매핑했다면 예: await PetCareUser.deleteOne({ hospitalCareId: id });
+    } catch (e) {
+      console.warn('user_db mirror delete failed:', e.message);
+      // 실패해도 200은 보냄(최선 수행). 필요 시 보상 큐 구성 가능.
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('delete care error:', e);
+    return res.status(500).json({ message: 'internal error' });
+  }
+});
+
 
 app.delete('/api/users/me/appointments/:id', auth, onlyUser, async (req, res) => {
   try {
@@ -2297,8 +2614,140 @@ app.get('/api/users/me/medical-histories', auth, onlyUser, async (req, res) => {
   } catch (e) { console.error('GET /api/users/me/medical-histories error:', e); return res.status(500).json({ message: 'server error' }); }
 });
 
+// ----------사용자 상품 -------
+// ✅ [3] 상품 관련 API
+app.post('/api/shop/products', async (req, res) => {
+  try {
+    const product = new Product(req.body);
+    await product.save();
+    res.json({ message: '상품 등록 성공', product });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
+app.get('/api/shop/products', async (_req, res) => {
+  try {
+    const products = await Product.find().sort({ createdAt: -1 });
+    res.json(products);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
+app.get('/api/shop/products/:id', async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
+    res.json(product);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/shop/products/:id', async (req, res) => {
+  try {
+    const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!product) return res.status(404).json({ message: '상품 없음' });
+    res.json(product);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/shop/products/:id', async (req, res) => {
+  try {
+    const deleted = await Product.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
+
+    if (deleted.images && deleted.images.length > 0) {
+      deleted.images.forEach((imgUrl) => {
+        const filePath = imgUrl.replace(/^https?:\/\/[^/]+/, '.');
+        fs.unlink(filePath, (err) => {
+          if (err) console.log('⚠️ 이미지 삭제 실패:', err.message);
+        });
+      });
+    }
+
+    res.json({ message: '✅ 상품 삭제 성공', deleted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ [4] 리뷰 기능
+app.post('/api/shop/products/:id/reviews', async (req, res) => {
+  try {
+    const { userName, rating, comment } = req.body;
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
+
+    product.reviews.push({ userName, rating, comment, createdAt: new Date() });
+    const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
+    product.averageRating = total / product.reviews.length;
+
+    await product.save();
+    res.json({ message: '리뷰 등록 성공', product });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/shop/products/:productId/reviews/:reviewId', async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.productId);
+    if (!product) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
+
+    product.reviews = product.reviews.filter((r) => r._id.toString() !== req.params.reviewId);
+    const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
+    product.averageRating = product.reviews.length ? total / product.reviews.length : 0;
+    await product.save();
+    res.json({ message: '✅ 리뷰 삭제 완료' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ [5] 주문 관련 API
+app.post('/api/shop/orders', async (req, res) => {
+  try {
+    const order = new Order(req.body);
+    await order.save();
+    res.json({ message: '주문 생성 성공', order });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/shop/orders', async (_req, res) => {
+  try {
+    const orders = await Order.find().sort({ createdAt: -1 });
+    res.json(orders);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/shop/orders/:orderId', async (req, res) => {
+  try {
+    const { status } = req.body;
+    const order = await Order.findByIdAndUpdate(req.params.orderId, { status }, { new: true });
+    if (!order) return res.status(404).json({ message: '주문 없음' });
+    res.json({ success: true, updatedOrder: order });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/shop/orders/:orderId', async (req, res) => {
+  try {
+    const order = await Order.findByIdAndDelete(req.params.orderId);
+    if (!order) return res.status(404).json({ message: '주문 없음' });
+    res.json({ success: true, message: '주문이 취소되었습니다' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 
