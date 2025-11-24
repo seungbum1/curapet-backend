@@ -725,23 +725,6 @@ healthRecordSchema.index({ userId: 1, dateTime: -1 });
 const HealthRecord = userConn.model('HealthRecord', healthRecordSchema, 'health_records');
 
 // ──────────────────────────────── 상품(Product) 스키마 ────────────────────────────────
-const productSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  category: { type: String, required: true },
-  description: { type: String, required: true },
-  quantity: { type: Number, required: true },
-  price: { type: Number, required: true },
-  images: [{ type: String }],
-  reviews: [
-    {
-      userName: { type: String, required: true },
-      rating: { type: Number, required: true },
-      comment: { type: String, required: true },
-      createdAt: { type: Date, default: Date.now },
-    },
-  ],
-  averageRating: { type: Number, default: 0 },
-}, { timestamps: true });
 
 
 // ──────────────────────────────── 주문(Order) 스키마 ────────────────────────────────
