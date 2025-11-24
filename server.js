@@ -154,7 +154,7 @@ const productSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-const Product = adminConn.model('Product', productSchema);
+
 
 // ✅ [2] 주문 스키마
 const orderSchema = new mongoose.Schema(
@@ -743,7 +743,6 @@ const productSchema = new mongoose.Schema({
   averageRating: { type: Number, default: 0 },
 }, { timestamps: true });
 
-const Product = adminDB.model('Product', productSchema);
 
 // ──────────────────────────────── 주문(Order) 스키마 ────────────────────────────────
 const orderSchema = new mongoose.Schema({
