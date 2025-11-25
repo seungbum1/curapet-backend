@@ -51,10 +51,6 @@ app.use(morgan('dev'));
 // const 부분
 // ────────────────────────────────────────────────────────────
 
-const { AdminConn, UserConn } = require('./db'); // 너희 프로젝트 연결 방식에 맞게
-const PetCareAdmin = AdminConn.model('PetCare'); // admin_db
-const PetCareUser  = UserConn.model('PetCare');  // user_db (미러)
-
 // 업로드 폴더 생성
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) {
