@@ -132,49 +132,6 @@ const upload = multer({
   }
 });
 
-// ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ
-// ✅ [1] 상품 스키마
-const productSchema = new mongoose.Schema(
-  {
-    name: { type: String, required: true },
-    category: { type: String, required: true },
-    description: { type: String, required: true },
-    quantity: { type: Number, required: true },
-    price: { type: Number, required: true },
-    images: [{ type: String }],
-    reviews: [
-      {
-        userName: { type: String, required: true },
-        rating: { type: Number, required: true },
-        comment: { type: String, required: true },
-        createdAt: { type: Date, default: Date.now },
-      },
-    ],
-    averageRating: { type: Number, default: 0 },
-  },
-  { timestamps: true }
-);
-const Product = adminConn.model('Product', productSchema);
-
-// ✅ [2] 주문 스키마
-const orderSchema = new mongoose.Schema(
-  {
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    products: [
-      {
-        productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-        name: String,
-        price: Number,
-        quantity: Number,
-      },
-    ],
-    totalPrice: { type: Number, required: true },
-    status: { type: String, default: '주문접수' }, // 주문접수 → 배송중 → 배송완료
-  },
-  { timestamps: true }
-);
-const Order = userConn.model('Order', orderSchema);
-
 // ─────────────── 레이트리밋(로그인/회원가입/업로드) ───────────────
 const authLimiter = rateLimit({
   windowMs: 10 * 60 * 1000, // 10분
@@ -188,13 +145,6 @@ const uploadLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-
-const Product = adminConn.model('Product', require('./models/Product'));
-const Order   = userConn.model('Order', require('./models/Order'));
-
-// ✅ 라우터 불러오기
-const productRoutes = require('./routes/productRoutes')(Product);
-const orderRoutes   = require('./routes/orderRoutes')(userConn);
 
 
 
@@ -714,10 +664,7 @@ const HospitalNotice = hospitalConn.model('HospitalNotice', hospitalNoticeSchema
 const ChatMessage = hospitalConn.model('ChatMessage', chatMessageSchema, 'chat_messages');
 
 
-// ---------------쇼핑------------------
-// ✅ 라우터 경로 등록
-app.use('/api/shop/products', productRoutes);
-app.use('/api/shop/orders', orderRoutes);
+
 
 
 // ────────────────────────────────────────────────────────────
@@ -2435,140 +2382,8 @@ app.get('/api/users/me/medical-histories', auth, onlyUser, async (req, res) => {
   } catch (e) { console.error('GET /api/users/me/medical-histories error:', e); return res.status(500).json({ message: 'server error' }); }
 });
 
-// ----------사용자 상품 -------
-// ✅ [3] 상품 관련 API
-app.post('/api/shop/products', async (req, res) => {
-  try {
-    const product = new Product(req.body);
-    await product.save();
-    res.json({ message: '상품 등록 성공', product });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
-app.get('/api/shop/products', async (_req, res) => {
-  try {
-    const products = await Product.find().sort({ createdAt: -1 });
-    res.json(products);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
-app.get('/api/shop/products/:id', async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
-    res.json(product);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.put('/api/shop/products/:id', async (req, res) => {
-  try {
-    const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!product) return res.status(404).json({ message: '상품 없음' });
-    res.json(product);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/shop/products/:id', async (req, res) => {
-  try {
-    const deleted = await Product.findByIdAndDelete(req.params.id);
-    if (!deleted) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
-
-    if (deleted.images && deleted.images.length > 0) {
-      deleted.images.forEach((imgUrl) => {
-        const filePath = imgUrl.replace(/^https?:\/\/[^/]+/, '.');
-        fs.unlink(filePath, (err) => {
-          if (err) console.log('⚠️ 이미지 삭제 실패:', err.message);
-        });
-      });
-    }
-
-    res.json({ message: '✅ 상품 삭제 성공', deleted });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ [4] 리뷰 기능
-app.post('/api/shop/products/:id/reviews', async (req, res) => {
-  try {
-    const { userName, rating, comment } = req.body;
-    const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
-
-    product.reviews.push({ userName, rating, comment, createdAt: new Date() });
-    const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
-    product.averageRating = total / product.reviews.length;
-
-    await product.save();
-    res.json({ message: '리뷰 등록 성공', product });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/shop/products/:productId/reviews/:reviewId', async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.productId);
-    if (!product) return res.status(404).json({ message: '상품을 찾을 수 없습니다.' });
-
-    product.reviews = product.reviews.filter((r) => r._id.toString() !== req.params.reviewId);
-    const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
-    product.averageRating = product.reviews.length ? total / product.reviews.length : 0;
-    await product.save();
-    res.json({ message: '✅ 리뷰 삭제 완료' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ [5] 주문 관련 API
-app.post('/api/shop/orders', async (req, res) => {
-  try {
-    const order = new Order(req.body);
-    await order.save();
-    res.json({ message: '주문 생성 성공', order });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/shop/orders', async (_req, res) => {
-  try {
-    const orders = await Order.find().sort({ createdAt: -1 });
-    res.json(orders);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.patch('/api/shop/orders/:orderId', async (req, res) => {
-  try {
-    const { status } = req.body;
-    const order = await Order.findByIdAndUpdate(req.params.orderId, { status }, { new: true });
-    if (!order) return res.status(404).json({ message: '주문 없음' });
-    res.json({ success: true, updatedOrder: order });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/api/shop/orders/:orderId', async (req, res) => {
-  try {
-    const order = await Order.findByIdAndDelete(req.params.orderId);
-    if (!order) return res.status(404).json({ message: '주문 없음' });
-    res.json({ success: true, message: '주문이 취소되었습니다' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 
 
@@ -2591,5 +2406,3 @@ const server = app.listen(PORT, () => {
 });
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 process.on('SIGINT',  () => server.close(() => process.exit(0)));
-
-지금까지 내. 코드임 기억하고 있어봐 알았지
