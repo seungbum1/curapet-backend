@@ -2378,11 +2378,30 @@ app.get('/api/users/me/medical-histories', auth, onlyUser, async (req, res) => {
   } catch (e) { console.error('GET /api/users/me/medical-histories error:', e); return res.status(500).json({ message: 'server error' }); }
 });
 
+// 🔐 관리자(admin) 로그인
+// ===============================
+app.post('/auth/admin-login', (req, res) => {
+  const { id, password } = req.body;
 
+  // ✔ 기본 관리자 계정 (원하면 DB로도 바꿀 수 있음)
+  const adminId = "admin";
+  const adminPw = "admin";
 
+  if (id === adminId && password === adminPw) {
+    const token = jwt.sign(
+      { admin: true, role: "MASTER_ADMIN" },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
+    return res.json({
+      message: "관리자 로그인 성공",
+      token,
+    });
+  }
 
-
+  return res.status(401).json({ message: "아이디 또는 비밀번호가 틀렸습니다." });
+});
 
 // ─────────────── 404 핸들러 ───────────────
 app.use((req, res, next) => {
