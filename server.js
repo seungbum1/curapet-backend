@@ -51,6 +51,16 @@ app.use(morgan('dev'));
 // const 부분
 // ────────────────────────────────────────────────────────────
 
+const { AdminConn, UserConn } = require('./db'); // 너희 프로젝트 연결 방식에 맞게
+const PetCareAdmin = AdminConn.model('PetCare'); // admin_db
+const PetCareUser  = UserConn.model('PetCare');  // user_db (미러)
+
+// 업로드 폴더 생성
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
 // CORS: 화이트리스트 → 없으면 전체 허용(개발편의)
 const allowOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
@@ -66,8 +76,9 @@ app.use(cors({
 app.use(express.json({ limit: '2mb' }));
 
 // ───────────────── 업로드 폴더 & 정적 서빙 ─────────────────
-const UP_ROOT = path.join(__dirname, 'uploads');
+const UP_ROOT = path.join(process.cwd(), 'uploads');   // ✅ 수정: __dirname → process.cwd()
 const UP_DIR  = path.join(UP_ROOT, 'pet-care');
+
 fs.mkdirSync(UP_DIR, { recursive: true });
 
 // 정적 파일 캐시(1d) + 기본 보안 옵션
@@ -80,8 +91,29 @@ app.use('/uploads', express.static(UP_ROOT, {
 }));
 
 // ─────────────── Multer(업로드) 설정 ───────────────
-const ALLOWED_EXTS  = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
-const ALLOWED_MIMES = new Set(['image/jpeg','image/png','image/gif','image/webp']);
+const ALLOWED_EXTS  = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif']);
+const ALLOWED_MIMES = new Set([
+  'image/jpeg',
+  'image/jpg',           // ✅ 추가
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'application/octet-stream' // ✅ iOS가 가끔 HEIC를 이렇게 보냄
+]);
+
+const EXT_BY_MIME = {
+  'image/jpeg': '.jpg',
+  'image/jpg':  '.jpg',
+  'image/png':  '.png',
+  'image/gif':  '.gif',
+  'image/webp': '.webp',
+  'image/heic': '.heic',
+  'image/heif': '.heif',
+  'application/octet-stream': '.heic', // ✅ iOS HEIC 추정치 (원하면 '.jpg'로 바꿔도 됨)
+};
+
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UP_DIR),
@@ -120,12 +152,51 @@ const uploadLimiter = rateLimit({
 // ─────────────── 공통 유틸 ───────────────
 // ────────────────────────────────────────────────────────────
 
+// 업로드 URL -> 실제 파일 경로로 안전 변환
+function filePathFromPublicUrl(publicUrl) {
+  try {
+    const u = new URL(publicUrl);
+    // 우리 서버의 /uploads/... 만 허용
+    if (!u.pathname.startsWith('/uploads/')) return null;
+    const fp = path.join(UPLOAD_DIR, u.pathname.replace(/^\/uploads\//, ''));
+    // 디렉터리 이스케이프 방지
+    const normalized = path.normalize(fp);
+    if (!normalized.startsWith(path.normalize(UPLOAD_DIR))) return null;
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+async function deleteFilesByUrls(urls = []) {
+  for (const u of urls) {
+    const fp = filePathFromPublicUrl(u);
+    if (!fp) continue;
+    try {
+      await fs.promises.unlink(fp);
+    } catch (e) {
+      // 이미 없는 경우 등은 무시
+      if (e.code !== 'ENOENT') console.warn('unlink error:', fp, e.message);
+    }
+  }
+}
+
+function buildBaseUrl(req) {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
+  const proto = req.get('x-forwarded-proto') || req.protocol;
+  const host  = req.get('x-forwarded-host') || req.get('host');
+  return `${proto}://${host}`;
+}
+function publicUrl(req, relativePath) {
+  const base = buildBaseUrl(req);
+  return `${base}${relativePath.startsWith('/') ? '' : '/'}${relativePath}`;
+}
+
 function issueToken(doc) {
   return jwt.sign({ uid: doc._id, role: doc.role }, JWT_SECRET, { expiresIn: '7d' });
 }
 
 function buildBaseUrl(req) {
-  // PUBLIC_BASE_URL 우선, 없으면 프록시 헤더 고려
   if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, '');
   const proto = req.get('x-forwarded-proto') || req.protocol;
   const host  = req.get('x-forwarded-host') || req.get('host');
@@ -133,9 +204,10 @@ function buildBaseUrl(req) {
 }
 
 function publicUrl(req, relativePath) {
-  const base = buildBaseUrl(req);
+  const base = buildBaseUrl(req);  // ✅ 여기로 변경
   return `${base}${relativePath.startsWith('/') ? '' : '/'}${relativePath}`;
 }
+
 
 function auth(req, res, next) {
   try {
@@ -485,6 +557,8 @@ const petCareSchema = new mongoose.Schema({
   hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
   hospitalName: { type: String, default: '' },
   createdBy:    { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  patientId:    { type: mongoose.Schema.Types.ObjectId, required: true, index: true }, // 🔴 추가
+  userId:       { type: mongoose.Schema.Types.ObjectId, index: true },
   date:         { type: String, default: '' },  // 'YYYY-MM-DD'
   time:         { type: String, default: '' },  // 'HH:mm'
   dateTime:     { type: Date,   index: true },
@@ -1149,7 +1223,7 @@ app.get('/api/hospital-admin/patients', auth, onlyHospitalAdmin, async (req, res
     const pipeline = [
       { $unwind: '$linkedHospitals' },
       { $match: { 'linkedHospitals.hospitalId': oid(req.jwt.uid), 'linkedHospitals.status': 'APPROVED' } },
-      { $project: { _id: 0, userId: '$_id', userName: '$name', petName: '$petProfile.name' } },
+      { $project: { _id: '$_id', userId: '$_id', userName: '$name', petName: '$petProfile.name' } },
       { $skip: skip },
       { $limit: limit },
     ];
@@ -1230,90 +1304,147 @@ app.post('/api/hospital-admin/medical-histories', auth, onlyHospitalAdmin, async
 
 app.get('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, async (req, res) => {
   try {
+    const { patientId } = req.query;
     const keyword = (req.query.keyword || '').toString().trim();
     const sortKey = (req.query.sort || 'dateDesc').toString();
+
+    if (!patientId) {
+      return res.status(400).json({ message: 'patientId required' });
+    }
+
+    // ✅ 이 유저가 이 병원과 APPROVED 연동인지 검증
+    const patientUser = await User.findOne({
+      _id: oid(patientId),
+      linkedHospitals: { $elemMatch: { hospitalId: oid(req.jwt.uid), status: 'APPROVED' } },
+    }).select('_id').lean();
+    if (!patientUser) {
+      return res.status(404).json({ message: 'patient not found in this hospital' });
+    }
+
     const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
     const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
     const skip  = (page - 1) * limit;
+    const sort  = (sortKey === 'dateAsc') ? 1 : -1;
 
-    const q = { hospitalId: oid(req.jwt.uid) };
+    // ✅ hospitalId + patientId(User._id) 로 조회
+    const q = {
+      hospitalId: oid(req.jwt.uid),
+      patientId : oid(patientId),
+    };
     if (keyword) {
       const rx = new RegExp(keyword, 'i');
       q.$or = [{ memo: rx }];
     }
-    const sort = sortKey === 'dateAsc' ? 1 : -1;
 
     const [items, total] = await Promise.all([
-      PetCare.find(q).sort({ dateTime: sort, createdAt: sort }).skip(skip).limit(limit).lean(),
+      PetCare.find(q)
+        .sort({ dateTime: sort, createdAt: sort })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       PetCare.countDocuments(q),
     ]);
+
     const data = items.map(d => ({
-      _id: d._id,
-      date: d.date || '',
-      time: d.time || '',
-      dateTime: d.dateTime,
-      memo: d.memo || '',
-      imageUrl: (d.images && d.images.length) ? d.images[0] : '',
-      images: d.images || [],
+      _id      : d._id,
+      date     : d.date || '',
+      time     : d.time || '',
+      dateTime : d.dateTime,
+      memo     : d.memo || '',
+      imageUrl : (d.images && d.images.length) ? d.images[0] : '',
+      images   : d.images || [],
+      patientId: d.patientId, // == User._id
     }));
+
     return res.json({ data, paging: { total, page, limit } });
-  } catch (e) { console.error('GET pet-care error:', e); return res.status(500).json({ message: 'server error' }); }
-});
-
-app.post('/api/hospital-admin/pet-care', auth, onlyHospitalAdmin, uploadLimiter, upload.array('images', 10), async (req, res) => {
-  try {
-    const admin = await HospitalUser.findById(oid(req.jwt.uid)).lean();
-    if (!admin) return res.status(404).json({ message: 'hospital not found' });
-    const date = (req.body.date || '').toString().trim();
-    const time = (req.body.time || '').toString().trim();
-    const memo = (req.body.memo || '').toString().trim();
-    if (!date || !time) return res.status(400).json({ message: 'date/time required' });
-
-    const urls = (req.files || []).map(f => publicUrl(req, `/uploads/pet-care/${path.basename(f.path)}`));
-
-    // 서울 타임존을 고려한 날짜 파싱은 클라이언트에서 ISO로 보내는 것이 제일 안전
-    const dt = new Date(`${date}T${time}:00`);
-    const doc = await PetCare.create({
-      hospitalId: oid(req.jwt.uid),
-      hospitalName: admin.hospitalName || '',
-      createdBy: oid(req.jwt.uid),
-      date, time, dateTime: isNaN(dt.getTime()) ? new Date() : dt,
-      memo,
-      images: urls,
-    });
-    const created = doc.toJSON();
-
-    // 이 병원과 연동(APPROVED)된 모든 사용자에게 알림
-    const approvedUsers = await User.find({
-      linkedHospitals: { $elemMatch: { hospitalId: oid(req.jwt.uid), status: 'APPROVED' } }
-    }).select('_id').lean();
-
-    await pushNotificationMany({
-      userIds: approvedUsers.map(u => u._id),
-      hospitalId: oid(req.jwt.uid),
-      hospitalName: admin.hospitalName || '',
-      type: 'PET_CARE_POSTED',
-      title: '새 반려 일지가 올라왔어요',
-      message: memo ? memo.slice(0, 80) : '이미지/메모가 등록되었습니다.',
-      meta: { petCareId: doc._id, imageUrl: urls[0] || '' }
-    });
-
-    return res.status(201).json({
-      data: {
-        _id: created._id,
-        date: created.date,
-        time: created.time,
-        dateTime: created.dateTime,
-        memo: created.memo,
-        imageUrl: (created.images && created.images.length) ? created.images[0] : '',
-        images: created.images || [],
-      }
-    });
   } catch (e) {
-    console.error('POST pet-care error:', e);
-    return res.status(500).json({ message: e?.message || 'server error' });
+    console.error('GET /api/hospital-admin/pet-care error:', e);
+    return res.status(500).json({ message: 'server error' });
   }
 });
+
+app.post(
+  '/api/hospital-admin/pet-care',
+  auth,
+  onlyHospitalAdmin,
+  uploadLimiter,
+  upload.array('images', 10),
+  async (req, res) => {
+    try {
+      const { patientId } = req.body;
+      const date = (req.body.date || '').toString().trim();
+      const time = (req.body.time || '').toString().trim();
+      const memo = (req.body.memo || '').toString().trim();
+
+      if (!patientId) return res.status(400).json({ message: 'patientId required' });
+      if (!date || !time) return res.status(400).json({ message: 'date/time required' });
+
+      // ✅ 이 유저가 이 병원과 APPROVED 연동인지 검증
+      const patientUser = await User.findOne({
+        _id: oid(patientId),
+        linkedHospitals: { $elemMatch: { hospitalId: oid(req.jwt.uid), status: 'APPROVED' } },
+      }).select('_id name petProfile').lean();
+      if (!patientUser) {
+        return res.status(404).json({ message: 'patient not found in this hospital' });
+      }
+
+      const urls = (req.files || []).map(f =>
+        publicUrl(req, `/uploads/pet-care/${path.basename(f.path)}`)
+      );
+
+      const dt = new Date(`${date}T${time}:00`);
+
+      const hospitalName =
+        (await HospitalUser.findById(oid(req.jwt.uid)).select('hospitalName').lean())
+          ?.hospitalName || '';
+
+      const doc = await PetCare.create({
+        hospitalId  : oid(req.jwt.uid),
+        hospitalName,
+        createdBy   : oid(req.jwt.uid),
+
+        // ✅ 통일: patientId = User._id, userId도 동일하게
+        patientId   : oid(patientId),
+        userId      : oid(patientId),
+
+        date,
+        time,
+        dateTime    : isNaN(dt.getTime()) ? new Date() : dt,
+        memo,
+        images      : urls,
+      });
+
+      const created = doc.toJSON();
+
+      await pushNotificationMany({
+        userIds     : [oid(patientId)],
+        hospitalId  : oid(req.jwt.uid),
+        hospitalName,
+        type        : 'PET_CARE_POSTED',
+        title       : '새 반려 일지가 올라왔어요',
+        message     : memo ? memo.slice(0, 80) : '이미지/메모가 등록되었습니다.',
+        meta        : { petCareId: created._id, imageUrl: urls[0] || '' },
+      });
+
+      return res.status(201).json({
+        data: {
+          _id      : created._id,
+          date     : created.date,
+          time     : created.time,
+          dateTime : created.dateTime,
+          memo     : created.memo,
+          imageUrl : (created.images && created.images.length) ? created.images[0] : '',
+          images   : created.images || [],
+          patientId: created.patientId, // == User._id
+        }
+      });
+    } catch (e) {
+      console.error('POST /api/hospital-admin/pet-care error:', e);
+      return res.status(500).json({ message: e?.message || 'server error' });
+    }
+  }
+);
+
 
 // ───────────────병원 예약 메타/신청 ───────────────
 
@@ -2026,6 +2157,47 @@ app.post('/api/hospitals/:hospitalId/chat/read-all', auth, onlyUser, async (req,
   }
 });
 
+app.delete('/api/hospital-admin/pet-care/:id', auth, onlyHospitalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 1) 삭제 대상 가져오기 + 병원 소속 검증
+    //    patient 테이블 join 없이, care 문서에 patientId가 있고 Patient에 hospitalId가 매칭되는 구조라면 아래처럼 확인:
+    const care = await PetCareAdmin.findById(id).lean();
+    if (!care) return res.status(404).json({ message: 'care not found' });
+
+    // 필수: 이 케어의 환자가 이 병원 소속인지 확인
+    const patient = await AdminConn.model('Patient')
+      .findOne({ _id: care.patientId, hospitalId: req.jwt.uid })
+      .select('_id')
+      .lean();
+    if (!patient) return res.status(403).json({ message: 'forbidden: not your patient' });
+
+    // 2) 파일 삭제 (images 배열/단일 imageUrl 모두 대응)
+    const urls = [];
+    if (Array.isArray(care.images)) urls.push(...care.images.filter(Boolean));
+    if (care.imageUrl) urls.push(care.imageUrl);
+    await deleteFilesByUrls(urls);
+
+    // 3) admin_db에서 문서 삭제
+    await PetCareAdmin.deleteOne({ _id: id });
+
+    // 4) user_db 미러 삭제 (최대한 동일 _id 사용 가정)
+    try {
+      await PetCareUser.deleteOne({ _id: id });
+      // 만약 다른 키로 매핑했다면 예: await PetCareUser.deleteOne({ hospitalCareId: id });
+    } catch (e) {
+      console.warn('user_db mirror delete failed:', e.message);
+      // 실패해도 200은 보냄(최선 수행). 필요 시 보상 큐 구성 가능.
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('delete care error:', e);
+    return res.status(500).json({ message: 'internal error' });
+  }
+});
+
 
 app.delete('/api/users/me/appointments/:id', auth, onlyUser, async (req, res) => {
   try {
@@ -2123,33 +2295,57 @@ app.get('/api/users/me/pet-care', auth, onlyUser, async (req, res) => {
     const { hospitalId, keyword = '', sort = 'dateDesc' } = req.query;
     if (!hospitalId) return res.status(400).json({ message: 'hospitalId required' });
 
+    // ✅ 병원-사용자 링크(APPROVED) 확인
     const me = await User.findById(oid(req.jwt.uid), { linkedHospitals: 1 }).lean();
-    const link = (me?.linkedHospitals || []).find(h => String(h.hospitalId) === String(hospitalId) && h.status === 'APPROVED');
-    if (!link) return res.status(403).json({ message: 'link to hospital required (APPROVED)' });
+    const link = (me?.linkedHospitals || []).find(
+      h => String(h.hospitalId) === String(hospitalId) && h.status === 'APPROVED'
+    );
+    if (!link) {
+      return res.status(403).json({ message: 'link to hospital required (APPROVED)' });
+    }
 
     const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
     const page  = Math.max(parseInt(req.query.page  || '1', 10), 1);
     const skip  = (page - 1) * limit;
+    const s = (String(sort) === 'dateAsc') ? 1 : -1;
 
-    const q = { hospitalId: oid(hospitalId) };
+    // ✅ 그냥 나의 userId(=patientId)로 조회
+    const q = {
+      hospitalId: oid(hospitalId),
+      patientId : oid(req.jwt.uid), // == User._id
+    };
     if (String(keyword).trim()) {
       const rx = new RegExp(String(keyword).trim(), 'i');
       q.$or = [{ memo: rx }];
     }
-    const s = sort === 'dateAsc' ? 1 : -1;
 
     const [items, total] = await Promise.all([
-      PetCare.find(q).sort({ dateTime: s, createdAt: s }).skip(skip).limit(limit).lean(),
+      PetCare.find(q)
+        .sort({ dateTime: s, createdAt: s })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       PetCare.countDocuments(q),
     ]);
 
     const data = items.map(d => ({
-      _id: d._id, date: d.date || '', time: d.time || '', dateTime: d.dateTime, memo: d.memo || '',
-      imageUrl: (d.images && d.images.length) ? d.images[0] : '', images: d.images || [],
+      _id     : d._id,
+      date    : d.date || '',
+      time    : d.time || '',
+      dateTime: d.dateTime,
+      memo    : d.memo || '',
+      imageUrl: (d.images && d.images.length) ? d.images[0] : '',
+      images  : d.images || [],
+      patientId: d.patientId, // == User._id
     }));
+
     res.json({ data, paging: { total, page, limit } });
-  } catch (e) { console.error('GET /api/users/me/pet-care error:', e); res.status(500).json({ message: 'server error' }); }
+  } catch (e) {
+    console.error('GET /api/users/me/pet-care error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
 });
+
 
 // ─────────────── 사용자: 내 진료내역 ───────────────
 
