@@ -618,6 +618,7 @@ const HealthRecord = userConn.model('HealthRecord', healthRecordSchema, 'health_
 
 // 3) Product 스키마 & 모델
 // =====================================================
+// Product Schema
 const productSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
@@ -626,10 +627,8 @@ const productSchema = new mongoose.Schema(
     price: { type: Number, required: true },
     quantity: { type: Number, default: 1 },
 
-    // 이미지 배열
     images: { type: [String], default: [] },
 
-    // 리뷰 기능
     reviews: [
       {
         userName: String,
@@ -638,44 +637,53 @@ const productSchema = new mongoose.Schema(
         createdAt: { type: Date, default: Date.now },
       },
     ],
+
     averageRating: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
 
-const cartSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
-  productId: String,
-  count: Number,
-}, { timestamps: true });
+// Cart Schema (userId = String)
+const cartSchema = new mongoose.Schema(
+  {
+    userId: { type: String, required: true, index: true },  // ← 수정됨!!!
+    productId: String,
+    count: Number,
+  },
+  { timestamps: true }
+);
 
 const Cart = userConn.model("Cart", cartSchema, "carts");
 
-// user_db에 저장할 Order 스키마
-const orderSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
-  userName: String,
-  address: String,
-  phone: String,
+// Order Schema (userId = String)
+const orderSchema = new mongoose.Schema(
+  {
+    userId: { type: String, required: true, index: true },  // ← 수정됨!!!
+    userName: String,
+    address: String,
+    phone: String,
 
-  product: {
-    _id: String,
-    name: String,
-    category: String,
-    price: Number,
-    quantity: Number,
-    image: String,
+    product: {
+      _id: String,
+      name: String,
+      category: String,
+      price: Number,
+      quantity: Number,
+      image: String,
+    },
+
+    payment: {
+      method: String,
+      totalAmount: Number,
+    },
+
+    status: { type: String, default: "결제완료" },
   },
-
-  payment: {
-    method: String,
-    totalAmount: Number,
-  },
-
-  status: { type: String, default: "결제완료" },
-}, { timestamps: true });
+  { timestamps: true }
+);
 
 const Order = userConn.model("Order", orderSchema, "orders");
+
 
 // ─────────────── 모델 server ───────────────
 
@@ -853,7 +861,7 @@ app.post("/users/:userId/orders", async (req, res) => {
     const userId = req.params.userId;
 
     const newOrder = await Order.create({
-      userId: oid(userId),  // ⭐ ObjectId 변환 필수
+      userId: userId,   // ← 문자열 그대로!!!
       ...req.body,
     });
 
@@ -868,7 +876,7 @@ app.get("/users/:userId/orders", async (req, res) => {
   try {
     const userId = req.params.userId;
 
-    const list = await Order.find({ userId: oid(userId) })
+    const list = await Order.find({ userId: userId }) // ← 문자열 매칭
       .sort({ createdAt: -1 })
       .lean();
 
@@ -878,10 +886,7 @@ app.get("/users/:userId/orders", async (req, res) => {
   }
 });
 
-//------------------------------------------------------
 // ⭐ 장바구니 API
-//------------------------------------------------------
-
 app.get("/users/:userId/cart", async (req, res) => {
   try {
     const list = await Cart.find({ userId: req.params.userId }).lean();
@@ -894,7 +899,7 @@ app.get("/users/:userId/cart", async (req, res) => {
 app.post("/users/:userId/cart", async (req, res) => {
   try {
     const cart = await Cart.create({
-      userId: req.params.userId,
+      userId: req.params.userId,     // ← 문자열
       productId: req.body.productId,
       count: req.body.count,
     });
@@ -907,7 +912,7 @@ app.post("/users/:userId/cart", async (req, res) => {
 app.delete("/users/:userId/cart/:productId", async (req, res) => {
   try {
     await Cart.deleteOne({
-      userId: req.params.userId,
+      userId: req.params.userId,     // ← 문자열
       productId: req.params.productId
     });
     res.json({ message: "장바구니 삭제 완료" });
@@ -915,6 +920,7 @@ app.delete("/users/:userId/cart/:productId", async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
+
 
 // ─────────────── 헬스 & 루트 ───────────────
 // ────────────────────────────────────────────────────────────
