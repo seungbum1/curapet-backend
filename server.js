@@ -690,13 +690,13 @@ const orderSchema = new mongoose.Schema(
 
 // ─────────────── 모델 server ───────────────
 
-const User                = userConn.model('User', userSchema, 'users');
-const HospitalUser        = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
-const Product = hospitalConn.model("Product", productSchema, "products");
-// const Product  = hospitalConn.model("Product",  productSchema,  "products");
-const Cart = userConn.model("Cart",     cartSchema,     "carts");
-const Favorite = userConn.model("Favorite", favoriteSchema, "favorites");
-// const Order    = userConn.model("Order",    orderSchema,    "orders");
+// ─────────────── 모델 server ───────────────
+const User      = userConn.model('User', userSchema, 'users');
+const HospitalUser = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
+const Product   = hospitalConn.model('Product', productSchema, 'products');
+const Cart      = userConn.model('Cart', cartSchema, 'carts');
+const Favorite  = userConn.model('Favorite', favoriteSchema, 'favorites');
+const Order     = userConn.model('Order', orderSchema, 'orders');  // ⬅️⬅️ 여기 주석 해제/추가!
 
 const HospitalLinkRequest = hospitalConn.model('HospitalLinkRequest', hospitalLinkRequestSchema, 'hospital_link_requests');
 const HospitalMeta        = hospitalConn.model('HospitalMeta', hospitalMetaSchema, 'hospital_meta');
@@ -770,21 +770,47 @@ app.put("/products/:id", async (req, res) => {
   }
 });
 
-// 수량 변경
+// ✅ (유지) 상품 재고 변경 - 결제 시 재고 차감
 app.patch("/products/:id/quantity", async (req, res) => {
   try {
     const { quantity } = req.body;
     const updated = await Product.findByIdAndUpdate(
       req.params.id,
-      { quantity },
+      { quantity: Number(quantity) },
       { new: true }
-    );
+    ).lean();
     if (!updated) return res.status(404).json({ message: "상품 없음" });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ✅ (추가) 장바구니 수량 변경 - 장바구니 화면의 ± 버튼
+app.patch("/users/:userId/cart/:productId", async (req, res) => {
+  try {
+    const { userId, productId } = req.params;
+    const { count } = req.body;
+
+    // count 유효성 체크 (선택)
+    const next = Number(count);
+    if (!Number.isFinite(next) || next < 1) {
+      return res.status(400).json({ message: "count는 1 이상 숫자여야 합니다" });
+    }
+
+    const updated = await Cart.findOneAndUpdate(
+      { userId, productId },
+      { $set: { count: next } },
+      { new: true }
+    ).lean();
+
+    if (!updated) return res.status(404).json({ message: "장바구니 항목 없음" });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 
 // 상품 삭제
 app.delete("/products/:id", async (req, res) => {
