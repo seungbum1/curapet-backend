@@ -664,28 +664,38 @@ const favoriteSchema = new mongoose.Schema(
 // 주문 (user_db.orders)
 const orderSchema = new mongoose.Schema(
   {
-    userId:   { type: String, required: true, index: true }, // 🔥 String 통일
-    userName: String,
-    address:  String,
-    phone:    String,
+    // 로그인한 사용자 id (문자열로 통일)
+    userId:   { type: String, required: true, index: true },
 
+    // 주문자 정보
+    userName: { type: String, default: "" },
+    address:  { type: String, default: "" },
+    phone:    { type: String, default: "" },
+
+    // 주문 당시 상품 스냅샷
     product: {
-      _id:      String,
-      name:     String,
-      category: String,
-      price:    Number,
-      quantity: Number,
-      image:    String,
+      _id:      { type: String, required: true }, // Product _id 문자열
+      name:     { type: String, required: true },
+      category: { type: String, default: "" },
+      price:    { type: Number, default: 0 },
+      quantity: { type: Number, default: 1 },     // 🔥 여기서 수량 관리
+      image:    { type: String, default: "" },
     },
 
+    // 결제 정보
     payment: {
-      method:      String,
-      totalAmount: Number,
+      method:      { type: String, default: "" },
+      totalAmount: { type: Number, default: 0 },
     },
 
-    status: { type: String, default: "결제완료" },
+    // 주문 상태
+    status: {
+      type: String,
+      enum: ["결제완료", "배송중", "배송완료", "취소됨"],
+      default: "결제완료",
+    },
   },
-  { timestamps: true }
+  { timestamps: true } // createdAt, updatedAt 자동 생성
 );
 
 // ─────────────── 모델 server ───────────────
@@ -810,6 +820,34 @@ app.patch("/users/:userId/cart/:productId", async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
+
+// 관리자: 주문 상태 변경
+app.patch("/orders/:orderId", async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status } = req.body || {};
+
+    if (!status) {
+      return res.status(400).json({ message: "status required" });
+    }
+
+    const updated = await Order.findByIdAndUpdate(
+      orderId,
+      { $set: { status } },
+      { new: true, lean: true },
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: "order not found" });
+    }
+
+    res.json(updated);
+  } catch (err) {
+    console.error("Order status update error:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 
 
 // 상품 삭제
@@ -987,15 +1025,42 @@ app.delete("/users/:userId/cart/:productId", async (req, res) => {
 //------------------------------------------------------
 
 // 주문 생성
+// 주문 생성 (사용자 결제 완료 시)
 app.post("/users/:userId/orders", async (req, res) => {
   try {
-    console.log("📥 POST /users/%s/orders body=", req.params.userId, req.body);
     const userId = req.params.userId;
+    const { productId, quantity, payment, userName } = req.body || {};
+
+    if (!productId || !quantity) {
+      return res.status(400).json({ message: "productId / quantity required" });
+    }
+
+    // 🔥 상품 정보는 DB에서 스냅샷으로 가져오기
+    const prod = await Product.findById(productId).lean();
+    if (!prod) return res.status(404).json({ message: "product not found" });
+
+    const total = payment?.totalAmount ?? (prod.price || 0) * quantity;
 
     const newOrder = await Order.create({
       userId,
-      ...req.body,
+      userName: (userName || "").trim(),
+      product: {
+        _id:      prod._id.toString(),
+        name:     prod.name,
+        category: prod.category,
+        price:    prod.price,
+        quantity: Number(quantity) || 1,   // ✅ 수량을 여기로
+        image: Array.isArray(prod.images) && prod.images.length > 0
+          ? prod.images[0]
+          : (prod.image || ""),
+      },
+      payment: {
+        method:      payment?.method || "",
+        totalAmount: total,
+      },
+      status: "결제완료",
     });
+
 
     res.status(201).json(newOrder);
   } catch (err) {
@@ -1003,6 +1068,7 @@ app.post("/users/:userId/orders", async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
+
 
 // 주문 목록 조회
 app.get("/users/:userId/orders", async (req, res) => {
@@ -1017,6 +1083,20 @@ app.get("/users/:userId/orders", async (req, res) => {
     res.json(list);
   } catch (err) {
     console.error("Order list error:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// 관리자: 전체 주문 목록 조회
+app.get("/orders", async (req, res) => {
+  try {
+    const list = await Order.find({})
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json(list);
+  } catch (err) {
+    console.error("Admin order list error:", err);
     res.status(500).json({ message: err.message });
   }
 });
