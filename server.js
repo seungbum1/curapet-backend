@@ -702,7 +702,7 @@ app.post("/upload", upload.single("image"), (req, res) => {
 });
 
 //------------------------------------------------------
-// 2) 상품 CRUD API
+// ⭐ 상품 CRUD API
 //------------------------------------------------------
 
 // ⭐ 상품 등록 (POST /products)
@@ -710,7 +710,6 @@ app.post("/products", async (req, res) => {
   try {
     const product = new Product(req.body);
     await product.save();
-
     res.json({ message: "상품 등록 성공", product });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -746,7 +745,6 @@ app.put("/products/:id", async (req, res) => {
       req.body,
       { new: true }
     );
-
     if (!updated) return res.status(404).json({ message: "상품 없음" });
     res.json(updated);
   } catch (err) {
@@ -758,15 +756,12 @@ app.put("/products/:id", async (req, res) => {
 app.patch("/products/:id/quantity", async (req, res) => {
   try {
     const { quantity } = req.body;
-
     const updated = await Product.findByIdAndUpdate(
       req.params.id,
       { quantity },
       { new: true }
     );
-
     if (!updated) return res.status(404).json({ message: "상품 없음" });
-
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -796,20 +791,19 @@ app.delete("/products/:id", async (req, res) => {
 });
 
 //------------------------------------------------------
-// 3) 리뷰 기능
+// ⭐ 리뷰 기능
 //------------------------------------------------------
 
-// ⭐ 리뷰 등록 (POST /products/:id/reviews)
+// 리뷰 등록
 app.post("/products/:id/reviews", async (req, res) => {
   try {
     const { userName, rating, comment } = req.body;
-
     const product = await Product.findById(req.params.id);
     if (!product) return res.status(404).json({ message: "상품 없음" });
 
     product.reviews.push({ userName, rating, comment });
 
-    // ⭐ 평균 평점 계산
+    // 평균 평점 계산
     const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
     product.averageRating = total / product.reviews.length;
 
@@ -820,7 +814,7 @@ app.post("/products/:id/reviews", async (req, res) => {
   }
 });
 
-// ⭐ 리뷰 삭제
+// 리뷰 삭제
 app.delete("/products/:productId/reviews/:reviewId", async (req, res) => {
   try {
     const { productId, reviewId } = req.params;
@@ -832,7 +826,7 @@ app.delete("/products/:productId/reviews/:reviewId", async (req, res) => {
       (r) => r._id.toString() !== reviewId
     );
 
-    // ⭐ 평균 평점 재계산
+    // 평균 재계산
     if (product.reviews.length > 0) {
       const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
       product.averageRating = total / product.reviews.length;
@@ -849,13 +843,17 @@ app.delete("/products/:productId/reviews/:reviewId", async (req, res) => {
   }
 });
 
-// ⭐ 주문 생성 API
+//------------------------------------------------------
+// ⭐ 주문 API
+//------------------------------------------------------
+
+// 주문 생성
 app.post("/users/:userId/orders", async (req, res) => {
   try {
     const userId = req.params.userId;
 
     const newOrder = await Order.create({
-      userId,
+      userId: oid(userId),  // ⭐ ObjectId 변환 필수
       ...req.body,
     });
 
@@ -865,11 +863,12 @@ app.post("/users/:userId/orders", async (req, res) => {
   }
 });
 
+// 주문 조회 (중복 없는 최종 버전)
 app.get("/users/:userId/orders", async (req, res) => {
   try {
     const userId = req.params.userId;
 
-    const list = await Order.find({ userId })
+    const list = await Order.find({ userId: oid(userId) })
       .sort({ createdAt: -1 })
       .lean();
 
@@ -878,6 +877,10 @@ app.get("/users/:userId/orders", async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
+
+//------------------------------------------------------
+// ⭐ 장바구니 API
+//------------------------------------------------------
 
 app.get("/users/:userId/cart", async (req, res) => {
   try {
@@ -912,27 +915,6 @@ app.delete("/users/:userId/cart/:productId", async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-
-// ⭐ 유저별 주문조회 API 추가
-app.get('/users/:userId/orders', async (req, res) => {
-  try {
-    const userId = req.params.userId;
-
-    const orders = await Order.find({ userId })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    if (!orders) return res.status(404).json({ message: "no orders" });
-
-    res.json(orders);
-
-  } catch (err) {
-    console.error("❌ 주문조회 오류:", err);
-    res.status(500).json({ message: "server error" });
-  }
-});
-
-
 
 // ─────────────── 헬스 & 루트 ───────────────
 // ────────────────────────────────────────────────────────────
