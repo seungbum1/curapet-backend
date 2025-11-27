@@ -681,7 +681,7 @@ const Order = userConn.model("Order", orderSchema, "orders");
 
 const User                = userConn.model('User', userSchema, 'users');
 const HospitalUser        = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
-const Product = userConn.model("Product", productSchema, "products");
+const Product = hospitalConn.model("Product", productSchema, "products");
 const HospitalLinkRequest = hospitalConn.model('HospitalLinkRequest', hospitalLinkRequestSchema, 'hospital_link_requests');
 const HospitalMeta        = hospitalConn.model('HospitalMeta', hospitalMetaSchema, 'hospital_meta');
 const Appointment         = hospitalConn.model('Appointment', appointmentSchema, 'appointments');
