@@ -989,10 +989,11 @@ app.delete("/users/:userId/cart/:productId", async (req, res) => {
 // 주문 생성
 app.post("/users/:userId/orders", async (req, res) => {
   try {
+    console.log("📥 POST /users/%s/orders body=", req.params.userId, req.body);
     const userId = req.params.userId;
 
     const newOrder = await Order.create({
-      userId,          // 🔥 여기서는 절대 oid() 쓰지 말 것
+      userId,
       ...req.body,
     });
 
@@ -1006,13 +1007,14 @@ app.post("/users/:userId/orders", async (req, res) => {
 // 주문 목록 조회
 app.get("/users/:userId/orders", async (req, res) => {
   try {
+    console.log("📡 GET /users/%s/orders", req.params.userId);
     const userId = req.params.userId;
 
     const list = await Order.find({ userId })
       .sort({ createdAt: -1 })
       .lean();
 
-    res.json(list);   // 비어 있어도 [] 리턴
+    res.json(list);
   } catch (err) {
     console.error("Order list error:", err);
     res.status(500).json({ message: err.message });
