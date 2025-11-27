@@ -344,6 +344,7 @@ adminConn.on('connected',    () => console.log('✅ adminConn -> admin_db'));
 );
 
 // ─────────────── 스키마 server───────────────
+
 // 체중/체성분 기록 (배열 원소에 개별 _id 불필요 → _id:false)
 const HealthWeightSchema = new mongoose.Schema(
   {
@@ -641,6 +642,40 @@ const productSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+const cartSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  productId: String,
+  count: Number,
+}, { timestamps: true });
+
+const Cart = userConn.model("Cart", cartSchema, "carts");
+
+// user_db에 저장할 Order 스키마
+const orderSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+  userName: String,
+  address: String,
+  phone: String,
+
+  product: {
+    _id: String,
+    name: String,
+    category: String,
+    price: Number,
+    quantity: Number,
+    image: String,
+  },
+
+  payment: {
+    method: String,
+    totalAmount: Number,
+  },
+
+  status: { type: String, default: "결제완료" },
+}, { timestamps: true });
+
+const Order = userConn.model("Order", orderSchema, "orders");
 
 // ─────────────── 모델 server ───────────────
 
@@ -2554,6 +2589,71 @@ app.delete("/products/:productId/reviews/:reviewId", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ⭐ 주문 생성 API
+app.post("/users/:userId/orders", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const newOrder = await Order.create({
+      userId,
+      ...req.body,
+    });
+
+    res.status(201).json(newOrder);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/users/:userId/orders", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const list = await Order.find({ userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/users/:userId/cart", async (req, res) => {
+  try {
+    const list = await Cart.find({ userId: req.params.userId }).lean();
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.post("/users/:userId/cart", async (req, res) => {
+  try {
+    const cart = await Cart.create({
+      userId: req.params.userId,
+      productId: req.body.productId,
+      count: req.body.count,
+    });
+    res.json(cart);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.delete("/users/:userId/cart/:productId", async (req, res) => {
+  try {
+    await Cart.deleteOne({
+      userId: req.params.userId,
+      productId: req.params.productId
+    });
+    res.json({ message: "장바구니 삭제 완료" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 
 
 // ─────────────── 404 핸들러 ───────────────
