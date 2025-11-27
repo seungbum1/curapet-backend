@@ -617,23 +617,22 @@ healthRecordSchema.index({ userId: 1, dateTime: -1 });
 const HealthRecord = userConn.model('HealthRecord', healthRecordSchema, 'health_records');
 
 // 3) Product 스키마 & 모델
-// =====================================================
-// Product Schema
+// 상품
 const productSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true },
-    category: { type: String, default: "간식" },
+    name:        { type: String, required: true },
+    category:    { type: String, default: "간식" },
     description: { type: String, default: "" },
-    price: { type: Number, required: true },
-    quantity: { type: Number, default: 1 },
+    price:       { type: Number, required: true },
+    quantity:    { type: Number, default: 1 },
 
     images: { type: [String], default: [] },
 
     reviews: [
       {
-        userName: String,
-        rating: Number,
-        comment: String,
+        userName:  String,
+        rating:    Number,
+        comment:   String,
         createdAt: { type: Date, default: Date.now },
       },
     ],
@@ -643,37 +642,44 @@ const productSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Cart Schema (userId = String)
+// 장바구니 (user_db)
 const cartSchema = new mongoose.Schema(
   {
-    userId: { type: String, required: true, index: true },  // ← 수정됨!!!
-    productId: String,
-    count: Number,
+    userId:    { type: String, required: true, index: true }, // 🔥 String 통일
+    productId: { type: String, required: true },
+    count:     { type: Number, default: 1 },
   },
   { timestamps: true }
 );
 
-const Cart = userConn.model("Cart", cartSchema, "carts");
+// 찜(즐겨찾기) (user_db)
+const favoriteSchema = new mongoose.Schema(
+  {
+    userId:    { type: String, required: true, index: true },
+    productId: { type: String, required: true, index: true },
+  },
+  { timestamps: true }
+);
 
-// Order Schema (userId = String)
+// 주문 (user_db.orders)
 const orderSchema = new mongoose.Schema(
   {
-    userId: { type: String, required: true, index: true },  // ← 수정됨!!!
+    userId:   { type: String, required: true, index: true }, // 🔥 String 통일
     userName: String,
-    address: String,
-    phone: String,
+    address:  String,
+    phone:    String,
 
     product: {
-      _id: String,
-      name: String,
+      _id:      String,
+      name:     String,
       category: String,
-      price: Number,
+      price:    Number,
       quantity: Number,
-      image: String,
+      image:    String,
     },
 
     payment: {
-      method: String,
+      method:      String,
       totalAmount: Number,
     },
 
@@ -682,14 +688,16 @@ const orderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-const Order = userConn.model("Order", orderSchema, "orders");
-
-
 // ─────────────── 모델 server ───────────────
 
 const User                = userConn.model('User', userSchema, 'users');
 const HospitalUser        = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
 const Product = hospitalConn.model("Product", productSchema, "products");
+const Product  = hospitalConn.model("Product",  productSchema,  "products");
+const Cart     = userConn.model("Cart",     cartSchema,     "carts");
+const Favorite = userConn.model("Favorite", favoriteSchema, "favorites");
+const Order    = userConn.model("Order",    orderSchema,    "orders");
+
 const HospitalLinkRequest = hospitalConn.model('HospitalLinkRequest', hospitalLinkRequestSchema, 'hospital_link_requests');
 const HospitalMeta        = hospitalConn.model('HospitalMeta', hospitalMetaSchema, 'hospital_meta');
 const Appointment         = hospitalConn.model('Appointment', appointmentSchema, 'appointments');
@@ -701,7 +709,9 @@ const Notification = userConn.model('Notification', notificationSchema, 'notific
 const HospitalNotice = hospitalConn.model('HospitalNotice', hospitalNoticeSchema, 'hospital_notices');
 const ChatMessage = hospitalConn.model('ChatMessage', chatMessageSchema, 'chat_messages');
 
-
+//------------------------------------------------------
+// 1) 파일 업로드 (이미 쓰던 거) 그대로 유지
+//------------------------------------------------------
 app.post("/upload", upload.single("image"), (req, res) => {
   if (!req.file) return res.status(400).json({ message: "이미지 없음" });
 
@@ -710,10 +720,10 @@ app.post("/upload", upload.single("image"), (req, res) => {
 });
 
 //------------------------------------------------------
-// ⭐ 상품 CRUD API
+// 2) 상품 CRUD
 //------------------------------------------------------
 
-// ⭐ 상품 등록 (POST /products)
+// 상품 등록
 app.post("/products", async (req, res) => {
   try {
     const product = new Product(req.body);
@@ -724,8 +734,8 @@ app.post("/products", async (req, res) => {
   }
 });
 
-// ⭐ 상품 목록 조회 (GET /products)
-app.get("/products", async (req, res) => {
+// 상품 목록
+app.get("/products", async (_req, res) => {
   try {
     const items = await Product.find().sort({ createdAt: -1 }).lean();
     res.json(items);
@@ -734,7 +744,7 @@ app.get("/products", async (req, res) => {
   }
 });
 
-// ⭐ 상품 단일 조회 (GET /products/:id)
+// 상품 단일 조회
 app.get("/products/:id", async (req, res) => {
   try {
     const item = await Product.findById(req.params.id).lean();
@@ -745,7 +755,7 @@ app.get("/products/:id", async (req, res) => {
   }
 });
 
-// ⭐ 상품 수정 (PUT /products/:id)
+// 상품 수정
 app.put("/products/:id", async (req, res) => {
   try {
     const updated = await Product.findByIdAndUpdate(
@@ -760,7 +770,7 @@ app.put("/products/:id", async (req, res) => {
   }
 });
 
-// ⭐ 수량 변경 (PATCH /products/:id/quantity)
+// 수량 변경
 app.patch("/products/:id/quantity", async (req, res) => {
   try {
     const { quantity } = req.body;
@@ -776,13 +786,12 @@ app.patch("/products/:id/quantity", async (req, res) => {
   }
 });
 
-// ⭐ 상품 삭제 (DELETE /products/:id)
+// 상품 삭제
 app.delete("/products/:id", async (req, res) => {
   try {
     const deleted = await Product.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ message: "상품 없음" });
 
-    // 이미지 파일 삭제
     if (deleted.images?.length > 0) {
       deleted.images.forEach((url) => {
         const filePath = "." + url;
@@ -799,19 +808,19 @@ app.delete("/products/:id", async (req, res) => {
 });
 
 //------------------------------------------------------
-// ⭐ 리뷰 기능
+// 3) 리뷰 기능
 //------------------------------------------------------
 
 // 리뷰 등록
 app.post("/products/:id/reviews", async (req, res) => {
   try {
     const { userName, rating, comment } = req.body;
+
     const product = await Product.findById(req.params.id);
     if (!product) return res.status(404).json({ message: "상품 없음" });
 
     product.reviews.push({ userName, rating, comment });
 
-    // 평균 평점 계산
     const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
     product.averageRating = total / product.reviews.length;
 
@@ -834,7 +843,6 @@ app.delete("/products/:productId/reviews/:reviewId", async (req, res) => {
       (r) => r._id.toString() !== reviewId
     );
 
-    // 평균 재계산
     if (product.reviews.length > 0) {
       const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
       product.averageRating = total / product.reviews.length;
@@ -852,41 +860,57 @@ app.delete("/products/:productId/reviews/:reviewId", async (req, res) => {
 });
 
 //------------------------------------------------------
-// ⭐ 주문 API
+// 4) 찜(즐겨찾기) API  ← Flutter /favorites랑 1:1 대응
 //------------------------------------------------------
 
-// 주문 생성
-app.post("/users/:userId/orders", async (req, res) => {
+// 찜 목록 조회 → Product 배열 리턴
+app.get("/users/:userId/favorites", async (req, res) => {
   try {
     const userId = req.params.userId;
+    const favs = await Favorite.find({ userId }).lean();
 
-    const newOrder = await Order.create({
-      userId: userId,   // ← 문자열 그대로!!!
-      ...req.body,
-    });
+    if (!favs.length) return res.json([]); // 비어 있으면 그냥 []
 
-    res.status(201).json(newOrder);
+    const ids = favs.map(f => f.productId);
+    const products = await Product.find({ _id: { $in: ids } }).lean();
+
+    res.json(products);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-// 주문 조회 (중복 없는 최종 버전)
-app.get("/users/:userId/orders", async (req, res) => {
+// 찜 추가
+app.post("/users/:userId/favorites/:productId", async (req, res) => {
   try {
-    const userId = req.params.userId;
-
-    const list = await Order.find({ userId: userId }) // ← 문자열 매칭
-      .sort({ createdAt: -1 })
-      .lean();
-
-    res.json(list);
+    const { userId, productId } = req.params;
+    await Favorite.updateOne(
+      { userId, productId },
+      { $set: { userId, productId } },
+      { upsert: true }
+    );
+    res.json({ message: "즐겨찾기 추가" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-// ⭐ 장바구니 API
+// 찜 삭제
+app.delete("/users/:userId/favorites/:productId", async (req, res) => {
+  try {
+    const { userId, productId } = req.params;
+    await Favorite.deleteOne({ userId, productId });
+    res.json({ message: "즐겨찾기 삭제" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+//------------------------------------------------------
+// 5) 장바구니 API  ← Flutter 경로에 딱 맞게
+//------------------------------------------------------
+
+// 장바구니 목록
 app.get("/users/:userId/cart", async (req, res) => {
   try {
     const list = await Cart.find({ userId: req.params.userId }).lean();
@@ -896,27 +920,75 @@ app.get("/users/:userId/cart", async (req, res) => {
   }
 });
 
-app.post("/users/:userId/cart", async (req, res) => {
+// 장바구니 담기  (POST /users/:userId/cart/:productId, body:{count})
+app.post("/users/:userId/cart/:productId", async (req, res) => {
   try {
+    const { userId, productId } = req.params;
+    const { count } = req.body;
+
+    const existing = await Cart.findOne({ userId, productId });
+    if (existing) {
+      existing.count += Number(count || 1);
+      await existing.save();
+      return res.json(existing);
+    }
+
     const cart = await Cart.create({
-      userId: req.params.userId,     // ← 문자열
-      productId: req.body.productId,
-      count: req.body.count,
+      userId,
+      productId,
+      count: Number(count || 1),
     });
+
     res.json(cart);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
+// 장바구니 삭제
 app.delete("/users/:userId/cart/:productId", async (req, res) => {
   try {
-    await Cart.deleteOne({
-      userId: req.params.userId,     // ← 문자열
-      productId: req.params.productId
-    });
+    const { userId, productId } = req.params;
+    await Cart.deleteOne({ userId, productId });
     res.json({ message: "장바구니 삭제 완료" });
   } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+//------------------------------------------------------
+// 6) 주문(결제) API  ← Flutter _completePayment와 1:1 대응
+//------------------------------------------------------
+
+// 주문 생성
+app.post("/users/:userId/orders", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const newOrder = await Order.create({
+      userId,          // 🔥 여기서는 절대 oid() 쓰지 말 것
+      ...req.body,
+    });
+
+    res.status(201).json(newOrder);
+  } catch (err) {
+    console.error("Order create error:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// 주문 목록 조회
+app.get("/users/:userId/orders", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const list = await Order.find({ userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json(list);   // 비어 있어도 [] 리턴
+  } catch (err) {
+    console.error("Order list error:", err);
     res.status(500).json({ message: err.message });
   }
 });
