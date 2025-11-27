@@ -18,9 +18,6 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const PORT        = process.env.PORT || 4000;
 const JWT_SECRET  = process.env.JWT_SECRET;
 
-
-
-
 // ─────────────── 환경변수 필수 체크 ───────────────
 if (!MONGODB_URI) {
   console.error('❌ MONGODB_URI is required');
@@ -43,11 +40,6 @@ app.use(helmet({
 app.use(compression());
 app.use(morgan('dev'));
 
-
-
-
-
-// ────────────────────────────────────────────────────────────
 // const 부분
 // ────────────────────────────────────────────────────────────
 
@@ -351,15 +343,7 @@ adminConn.on('connected',    () => console.log('✅ adminConn -> admin_db'));
   c.on('error', (e) => console.error('Mongo error:', e?.message || e))
 );
 
-
-
-
-
-
-// ────────────────────────────────────────────────────────────
 // ─────────────── 스키마 server───────────────
-// ────────────────────────────────────────────────────────────
-
 // 체중/체성분 기록 (배열 원소에 개별 _id 불필요 → _id:false)
 const HealthWeightSchema = new mongoose.Schema(
   {
@@ -636,13 +620,15 @@ const HealthRecord = userConn.model('HealthRecord', healthRecordSchema, 'health_
 const productSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
-    category: { type: String, required: true },
-    description: { type: String, required: true },
-    quantity: { type: Number, required: true },
+    category: { type: String, default: "간식" },
+    description: { type: String, default: "" },
     price: { type: Number, required: true },
-    images: [{ type: String }],  // 이미지 URL 배열
+    quantity: { type: Number, default: 1 },
 
-    // 리뷰
+    // 이미지 배열
+    images: { type: [String], default: [] },
+
+    // 리뷰 기능
     reviews: [
       {
         userName: String,
@@ -656,15 +642,11 @@ const productSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-const Product = mongoose.model("Product", productSchema);
-
-
-// ────────────────────────────────────────────────────────────
 // ─────────────── 모델 server ───────────────
-// ────────────────────────────────────────────────────────────
 
 const User                = userConn.model('User', userSchema, 'users');
 const HospitalUser        = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
+const Product = hospitalConn.model("Product", productSchema, "products");
 const HospitalLinkRequest = hospitalConn.model('HospitalLinkRequest', hospitalLinkRequestSchema, 'hospital_link_requests');
 const HospitalMeta        = hospitalConn.model('HospitalMeta', hospitalMetaSchema, 'hospital_meta');
 const Appointment         = hospitalConn.model('Appointment', appointmentSchema, 'appointments');
@@ -676,11 +658,6 @@ const Notification = userConn.model('Notification', notificationSchema, 'notific
 const HospitalNotice = hospitalConn.model('HospitalNotice', hospitalNoticeSchema, 'hospital_notices');
 const ChatMessage = hospitalConn.model('ChatMessage', chatMessageSchema, 'chat_messages');
 
-
-
-
-
-// ────────────────────────────────────────────────────────────
 // ─────────────── 헬스 & 루트 ───────────────
 // ────────────────────────────────────────────────────────────
 
@@ -2420,6 +2397,9 @@ app.post('/auth/admin-login', (req, res) => {
   return res.status(401).json({ message: "아이디 또는 비밀번호가 틀렸습니다." });
 });
 
+// 1) 이미지 업로드
+//------------------------------------------------------
+
 app.post("/upload", upload.single("image"), (req, res) => {
   if (!req.file) return res.status(400).json({ message: "이미지 없음" });
 
@@ -2427,17 +2407,16 @@ app.post("/upload", upload.single("image"), (req, res) => {
   res.json({ imageUrl: fileUrl });
 });
 
-
-
-// =====================================================
-// 5) 상품 CRUD
-// =====================================================
+//------------------------------------------------------
+// 2) 상품 CRUD API
+//------------------------------------------------------
 
 // ⭐ 상품 등록 (POST /products)
 app.post("/products", async (req, res) => {
   try {
     const product = new Product(req.body);
     await product.save();
+
     res.json({ message: "상품 등록 성공", product });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2447,7 +2426,7 @@ app.post("/products", async (req, res) => {
 // ⭐ 상품 목록 조회 (GET /products)
 app.get("/products", async (req, res) => {
   try {
-    const items = await Product.find().sort({ createdAt: -1 });
+    const items = await Product.find().sort({ createdAt: -1 }).lean();
     res.json(items);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2457,7 +2436,7 @@ app.get("/products", async (req, res) => {
 // ⭐ 상품 단일 조회 (GET /products/:id)
 app.get("/products/:id", async (req, res) => {
   try {
-    const item = await Product.findById(req.params.id);
+    const item = await Product.findById(req.params.id).lean();
     if (!item) return res.status(404).json({ message: "상품 없음" });
     res.json(item);
   } catch (err) {
@@ -2468,18 +2447,20 @@ app.get("/products/:id", async (req, res) => {
 // ⭐ 상품 수정 (PUT /products/:id)
 app.put("/products/:id", async (req, res) => {
   try {
-    const updated = await Product.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-    });
-    if (!updated) return res.status(404).json({ message: "상품 없음" });
+    const updated = await Product.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
 
+    if (!updated) return res.status(404).json({ message: "상품 없음" });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ⭐ 상품 수량 변경 (PATCH /products/:id/quantity)
+// ⭐ 수량 변경 (PATCH /products/:id/quantity)
 app.patch("/products/:id/quantity", async (req, res) => {
   try {
     const { quantity } = req.body;
@@ -2491,6 +2472,7 @@ app.patch("/products/:id/quantity", async (req, res) => {
     );
 
     if (!updated) return res.status(404).json({ message: "상품 없음" });
+
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2501,14 +2483,13 @@ app.patch("/products/:id/quantity", async (req, res) => {
 app.delete("/products/:id", async (req, res) => {
   try {
     const deleted = await Product.findByIdAndDelete(req.params.id);
-
     if (!deleted) return res.status(404).json({ message: "상품 없음" });
 
-    // 이미지 파일도 삭제
+    // 이미지 파일 삭제
     if (deleted.images?.length > 0) {
       deleted.images.forEach((url) => {
-        const local = "." + url; // '/uploads/xxx.jpg'
-        fs.unlink(local, (err) => {
+        const filePath = "." + url;
+        fs.unlink(filePath, (err) => {
           if (err) console.log("이미지 삭제 실패:", err.message);
         });
       });
@@ -2520,10 +2501,9 @@ app.delete("/products/:id", async (req, res) => {
   }
 });
 
-
-// =====================================================
-// 6) 리뷰 기능
-// =====================================================
+//------------------------------------------------------
+// 3) 리뷰 기능
+//------------------------------------------------------
 
 // ⭐ 리뷰 등록 (POST /products/:id/reviews)
 app.post("/products/:id/reviews", async (req, res) => {
@@ -2546,7 +2526,7 @@ app.post("/products/:id/reviews", async (req, res) => {
   }
 });
 
-// ⭐ 리뷰 삭제 (DELETE /products/:productId/reviews/:reviewId)
+// ⭐ 리뷰 삭제
 app.delete("/products/:productId/reviews/:reviewId", async (req, res) => {
   try {
     const { productId, reviewId } = req.params;
