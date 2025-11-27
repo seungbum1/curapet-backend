@@ -693,10 +693,10 @@ const orderSchema = new mongoose.Schema(
 const User                = userConn.model('User', userSchema, 'users');
 const HospitalUser        = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
 const Product = hospitalConn.model("Product", productSchema, "products");
-const Product  = hospitalConn.model("Product",  productSchema,  "products");
-const Cart     = userConn.model("Cart",     cartSchema,     "carts");
+// const Product  = hospitalConn.model("Product",  productSchema,  "products");
+const Cart = userConn.model("Cart",     cartSchema,     "carts");
 const Favorite = userConn.model("Favorite", favoriteSchema, "favorites");
-const Order    = userConn.model("Order",    orderSchema,    "orders");
+// const Order    = userConn.model("Order",    orderSchema,    "orders");
 
 const HospitalLinkRequest = hospitalConn.model('HospitalLinkRequest', hospitalLinkRequestSchema, 'hospital_link_requests');
 const HospitalMeta        = hospitalConn.model('HospitalMeta', hospitalMetaSchema, 'hospital_meta');
