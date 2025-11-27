@@ -913,6 +913,26 @@ app.delete("/users/:userId/cart/:productId", async (req, res) => {
   }
 });
 
+// ⭐ 유저별 주문조회 API 추가
+app.get('/users/:userId/orders', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const orders = await Order.find({ userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!orders) return res.status(404).json({ message: "no orders" });
+
+    res.json(orders);
+
+  } catch (err) {
+    console.error("❌ 주문조회 오류:", err);
+    res.status(500).json({ message: "server error" });
+  }
+});
+
+
 
 // ─────────────── 헬스 & 루트 ───────────────
 // ────────────────────────────────────────────────────────────
