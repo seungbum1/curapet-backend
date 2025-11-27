@@ -681,7 +681,7 @@ const Order = userConn.model("Order", orderSchema, "orders");
 
 const User                = userConn.model('User', userSchema, 'users');
 const HospitalUser        = hospitalConn.model('HospitalUser', hospitalUserSchema, 'hospital_user');
-const Product = hospitalConn.model("Product", productSchema, "products");
+const Product = userConn.model("Product", productSchema, "products");
 const HospitalLinkRequest = hospitalConn.model('HospitalLinkRequest', hospitalLinkRequestSchema, 'hospital_link_requests');
 const HospitalMeta        = hospitalConn.model('HospitalMeta', hospitalMetaSchema, 'hospital_meta');
 const Appointment         = hospitalConn.model('Appointment', appointmentSchema, 'appointments');
@@ -692,6 +692,227 @@ const SosLog = hospitalConn.model('SosLog', sosLogSchema, 'sos_logs');
 const Notification = userConn.model('Notification', notificationSchema, 'notifications');
 const HospitalNotice = hospitalConn.model('HospitalNotice', hospitalNoticeSchema, 'hospital_notices');
 const ChatMessage = hospitalConn.model('ChatMessage', chatMessageSchema, 'chat_messages');
+
+
+app.post("/upload", upload.single("image"), (req, res) => {
+  if (!req.file) return res.status(400).json({ message: "이미지 없음" });
+
+  const fileUrl = `/uploads/pet-care/${req.file.filename}`;
+  res.json({ imageUrl: fileUrl });
+});
+
+//------------------------------------------------------
+// 2) 상품 CRUD API
+//------------------------------------------------------
+
+// ⭐ 상품 등록 (POST /products)
+app.post("/products", async (req, res) => {
+  try {
+    const product = new Product(req.body);
+    await product.save();
+
+    res.json({ message: "상품 등록 성공", product });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ⭐ 상품 목록 조회 (GET /products)
+app.get("/products", async (req, res) => {
+  try {
+    const items = await Product.find().sort({ createdAt: -1 }).lean();
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ⭐ 상품 단일 조회 (GET /products/:id)
+app.get("/products/:id", async (req, res) => {
+  try {
+    const item = await Product.findById(req.params.id).lean();
+    if (!item) return res.status(404).json({ message: "상품 없음" });
+    res.json(item);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ⭐ 상품 수정 (PUT /products/:id)
+app.put("/products/:id", async (req, res) => {
+  try {
+    const updated = await Product.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ message: "상품 없음" });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ⭐ 수량 변경 (PATCH /products/:id/quantity)
+app.patch("/products/:id/quantity", async (req, res) => {
+  try {
+    const { quantity } = req.body;
+
+    const updated = await Product.findByIdAndUpdate(
+      req.params.id,
+      { quantity },
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ message: "상품 없음" });
+
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ⭐ 상품 삭제 (DELETE /products/:id)
+app.delete("/products/:id", async (req, res) => {
+  try {
+    const deleted = await Product.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ message: "상품 없음" });
+
+    // 이미지 파일 삭제
+    if (deleted.images?.length > 0) {
+      deleted.images.forEach((url) => {
+        const filePath = "." + url;
+        fs.unlink(filePath, (err) => {
+          if (err) console.log("이미지 삭제 실패:", err.message);
+        });
+      });
+    }
+
+    res.json({ message: "상품 삭제 성공", deleted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+//------------------------------------------------------
+// 3) 리뷰 기능
+//------------------------------------------------------
+
+// ⭐ 리뷰 등록 (POST /products/:id/reviews)
+app.post("/products/:id/reviews", async (req, res) => {
+  try {
+    const { userName, rating, comment } = req.body;
+
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ message: "상품 없음" });
+
+    product.reviews.push({ userName, rating, comment });
+
+    // ⭐ 평균 평점 계산
+    const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
+    product.averageRating = total / product.reviews.length;
+
+    await product.save();
+    res.json({ message: "리뷰 등록 성공", product });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ⭐ 리뷰 삭제
+app.delete("/products/:productId/reviews/:reviewId", async (req, res) => {
+  try {
+    const { productId, reviewId } = req.params;
+
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ message: "상품 없음" });
+
+    product.reviews = product.reviews.filter(
+      (r) => r._id.toString() !== reviewId
+    );
+
+    // ⭐ 평균 평점 재계산
+    if (product.reviews.length > 0) {
+      const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
+      product.averageRating = total / product.reviews.length;
+    } else {
+      product.averageRating = 0;
+    }
+
+    product.markModified("reviews");
+    await product.save();
+
+    res.json({ message: "리뷰 삭제 성공" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ⭐ 주문 생성 API
+app.post("/users/:userId/orders", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const newOrder = await Order.create({
+      userId,
+      ...req.body,
+    });
+
+    res.status(201).json(newOrder);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/users/:userId/orders", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const list = await Order.find({ userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/users/:userId/cart", async (req, res) => {
+  try {
+    const list = await Cart.find({ userId: req.params.userId }).lean();
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.post("/users/:userId/cart", async (req, res) => {
+  try {
+    const cart = await Cart.create({
+      userId: req.params.userId,
+      productId: req.body.productId,
+      count: req.body.count,
+    });
+    res.json(cart);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.delete("/users/:userId/cart/:productId", async (req, res) => {
+  try {
+    await Cart.deleteOne({
+      userId: req.params.userId,
+      productId: req.params.productId
+    });
+    res.json({ message: "장바구니 삭제 완료" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 
 // ─────────────── 헬스 & 루트 ───────────────
 // ────────────────────────────────────────────────────────────
@@ -2434,225 +2655,6 @@ app.post('/auth/admin-login', (req, res) => {
 
 // 1) 이미지 업로드
 //------------------------------------------------------
-
-app.post("/upload", upload.single("image"), (req, res) => {
-  if (!req.file) return res.status(400).json({ message: "이미지 없음" });
-
-  const fileUrl = `/uploads/pet-care/${req.file.filename}`;
-  res.json({ imageUrl: fileUrl });
-});
-
-//------------------------------------------------------
-// 2) 상품 CRUD API
-//------------------------------------------------------
-
-// ⭐ 상품 등록 (POST /products)
-app.post("/products", async (req, res) => {
-  try {
-    const product = new Product(req.body);
-    await product.save();
-
-    res.json({ message: "상품 등록 성공", product });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ⭐ 상품 목록 조회 (GET /products)
-app.get("/products", async (req, res) => {
-  try {
-    const items = await Product.find().sort({ createdAt: -1 }).lean();
-    res.json(items);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ⭐ 상품 단일 조회 (GET /products/:id)
-app.get("/products/:id", async (req, res) => {
-  try {
-    const item = await Product.findById(req.params.id).lean();
-    if (!item) return res.status(404).json({ message: "상품 없음" });
-    res.json(item);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ⭐ 상품 수정 (PUT /products/:id)
-app.put("/products/:id", async (req, res) => {
-  try {
-    const updated = await Product.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true }
-    );
-
-    if (!updated) return res.status(404).json({ message: "상품 없음" });
-    res.json(updated);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ⭐ 수량 변경 (PATCH /products/:id/quantity)
-app.patch("/products/:id/quantity", async (req, res) => {
-  try {
-    const { quantity } = req.body;
-
-    const updated = await Product.findByIdAndUpdate(
-      req.params.id,
-      { quantity },
-      { new: true }
-    );
-
-    if (!updated) return res.status(404).json({ message: "상품 없음" });
-
-    res.json(updated);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ⭐ 상품 삭제 (DELETE /products/:id)
-app.delete("/products/:id", async (req, res) => {
-  try {
-    const deleted = await Product.findByIdAndDelete(req.params.id);
-    if (!deleted) return res.status(404).json({ message: "상품 없음" });
-
-    // 이미지 파일 삭제
-    if (deleted.images?.length > 0) {
-      deleted.images.forEach((url) => {
-        const filePath = "." + url;
-        fs.unlink(filePath, (err) => {
-          if (err) console.log("이미지 삭제 실패:", err.message);
-        });
-      });
-    }
-
-    res.json({ message: "상품 삭제 성공", deleted });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-//------------------------------------------------------
-// 3) 리뷰 기능
-//------------------------------------------------------
-
-// ⭐ 리뷰 등록 (POST /products/:id/reviews)
-app.post("/products/:id/reviews", async (req, res) => {
-  try {
-    const { userName, rating, comment } = req.body;
-
-    const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: "상품 없음" });
-
-    product.reviews.push({ userName, rating, comment });
-
-    // ⭐ 평균 평점 계산
-    const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
-    product.averageRating = total / product.reviews.length;
-
-    await product.save();
-    res.json({ message: "리뷰 등록 성공", product });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ⭐ 리뷰 삭제
-app.delete("/products/:productId/reviews/:reviewId", async (req, res) => {
-  try {
-    const { productId, reviewId } = req.params;
-
-    const product = await Product.findById(productId);
-    if (!product) return res.status(404).json({ message: "상품 없음" });
-
-    product.reviews = product.reviews.filter(
-      (r) => r._id.toString() !== reviewId
-    );
-
-    // ⭐ 평균 평점 재계산
-    if (product.reviews.length > 0) {
-      const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
-      product.averageRating = total / product.reviews.length;
-    } else {
-      product.averageRating = 0;
-    }
-
-    product.markModified("reviews");
-    await product.save();
-
-    res.json({ message: "리뷰 삭제 성공" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ⭐ 주문 생성 API
-app.post("/users/:userId/orders", async (req, res) => {
-  try {
-    const userId = req.params.userId;
-
-    const newOrder = await Order.create({
-      userId,
-      ...req.body,
-    });
-
-    res.status(201).json(newOrder);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-app.get("/users/:userId/orders", async (req, res) => {
-  try {
-    const userId = req.params.userId;
-
-    const list = await Order.find({ userId })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    res.json(list);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-app.get("/users/:userId/cart", async (req, res) => {
-  try {
-    const list = await Cart.find({ userId: req.params.userId }).lean();
-    res.json(list);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-app.post("/users/:userId/cart", async (req, res) => {
-  try {
-    const cart = await Cart.create({
-      userId: req.params.userId,
-      productId: req.body.productId,
-      count: req.body.count,
-    });
-    res.json(cart);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-app.delete("/users/:userId/cart/:productId", async (req, res) => {
-  try {
-    await Cart.deleteOne({
-      userId: req.params.userId,
-      productId: req.params.productId
-    });
-    res.json({ message: "장바구니 삭제 완료" });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
 
 
 
