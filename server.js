@@ -1238,6 +1238,7 @@ app.put('/users/me/pet', auth, onlyUser, async (req, res) => {
 
 // ------ 새로 추가한거 * 세찬
 app.post('/api/ai-chat', auth, onlyUser, async (req, res) => {
+  console.log('✅ HIT /api/ai-chat');
   try {
     const userId = req.jwt.uid;
     const { messages } = req.body;
@@ -2989,10 +2990,20 @@ app.post('/auth/admin-login', (req, res) => {
 
 
 // ─────────────── 404 핸들러 ───────────────
+// ─────────────── 404 핸들러 ───────────────
+// ⚠️ 반드시 모든 라우트(app.get/app.post...) 정의 **아래쪽**에 위치해야 함
 app.use((req, res, next) => {
-  if (req.path === '/favicon.ico') return res.status(204).send();
+  if (req.path === '/favicon.ico') {
+    console.log('🔥 REQUEST (favicon ignored):', req.method, req.originalUrl);
+    return res.status(204).send();
+  }
+
+  // 여기서 404 로그 찍기
+  console.log('❌ 404 NOT FOUND:', req.method, req.originalUrl);
+
   return res.status(404).json({ message: 'not found' });
 });
+
 
 // ─────────────── 공통 에러 핸들러 ───────────────
 app.use((err, _req, res, _next) => {
