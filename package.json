@@ -12,6 +12,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@google/genai": "^1.30.0",
     "bcrypt": "^6.0.0",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
