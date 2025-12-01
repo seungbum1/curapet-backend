@@ -14,6 +14,9 @@ const compression= require('compression');
 const morgan     = require('morgan');
 const rateLimit  = require('express-rate-limit');
 
+// ---- 새로추가
+const { GoogleGenAI } = require('@google/genai');
+
 const MONGODB_URI = process.env.MONGODB_URI;
 const PORT        = process.env.PORT || 4000;
 const JWT_SECRET  = process.env.JWT_SECRET;
@@ -61,7 +64,8 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ───────────────── 업로드 폴더 & 정적 서빙 ─────────────────
 const UP_ROOT = path.join(process.cwd(), 'uploads');   // ✅ 수정: __dirname → process.cwd()
@@ -382,7 +386,7 @@ const DiarySchema = new mongoose.Schema(
     title:     { type: String, default: '' },
     content:   { type: String, default: '' },
     date:      { type: Date,   default: Date.now, index: true },
-    imagePath: { type: String, default: '' }, // 업로드 경로 또는 URL
+    images:    [{ type: String }], // ✅ 여러 장 저장 가능하도록 배열로 변경
   },
   { _id: true }
 );
@@ -596,6 +600,23 @@ const hospitalNoticeSchema = new mongoose.Schema({
   createdBy:    { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
 }, { timestamps: true });
 
+//AI 채팅 스키마
+const aiChatMessageSchema = new mongoose.Schema({
+  userId:      { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+
+  // USER | ASSISTANT (Flutter ChatMessage의 isUser와 매핑)
+  senderRole:  { type: String, enum: ['USER','ASSISTANT'], required: true, index: true },
+  text:        { type: String, required: true },
+
+  // Flutter에서 전달하는 필드 (영구 저장용)
+  timestamp:   { type: Date, default: Date.now, index: true }, // Flutter의 timestamp 필드
+  chartType:   { type: String, default: null },
+
+  // 기존 채팅 메시지의 createdAt을 그대로 사용
+  createdAt:   { type: Date, default: Date.now, index: true },
+}, { versionKey: false });
+aiChatMessageSchema.index({ userId: 1, timestamp: -1 });
+
 // 건강관리(헬스) 스키마 — user_db에 둔다
 const healthRecordSchema = new mongoose.Schema({
   userId:     { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
@@ -718,6 +739,7 @@ const SosLog = hospitalConn.model('SosLog', sosLogSchema, 'sos_logs');
 const Notification = userConn.model('Notification', notificationSchema, 'notifications');
 const HospitalNotice = hospitalConn.model('HospitalNotice', hospitalNoticeSchema, 'hospital_notices');
 const ChatMessage = hospitalConn.model('ChatMessage', chatMessageSchema, 'chat_messages');
+const AiChatMessage = userConn.model('AiChatMessage', aiChatMessageSchema, 'ai_chat_messages');
 
 //------------------------------------------------------
 // 1) 파일 업로드 (이미 쓰던 거) 그대로 유지
@@ -1213,6 +1235,108 @@ app.put('/users/me/pet', auth, onlyUser, async (req, res) => {
     return res.json({ user });
   } catch (e) { console.error('PUT /users/me/pet error:', e); return res.status(500).json({ message: 'server error' }); }
 });
+
+// ------ 새로 추가한거 * 세찬
+app.post('/api/ai-chat', auth, onlyUser, async (req, res) => {
+  try {
+    const userId = req.jwt.uid;
+    const { messages } = req.body;
+
+    // ... (사용자 조회 코드 생략) ...
+
+    // ⭐️ 중요: 여기서부터 실제 AI 호출
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+    // 새로추가 및 편집
+    const geminiMessages = messages.map(m => {
+        // Flutter에서 System Prompt를 'system' role로 보냈지만,
+        // Gemini는 'user'와 'model'만 인식하므로 역할을 명확히 분리합니다.
+
+        // ⭐️ [수정] System/User 메시지는 'user' role로, Assistant/Model 응답은 'model'로 매핑
+        const role = (m.role === 'model' || m.role === 'assistant') ? 'model' : 'user';
+
+        return {
+            role: role,
+            parts: [{ text: m.content }]
+        };
+    });
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash', // 또는 'gemini-2.5-pro'
+        contents: geminiMessages,
+    });
+
+    // 2. AI 응답 추출
+    // ⭐️ [수정] .text() 함수 호출을 제거하고 .text 속성을 직접 사용합니다.
+    const aiResponseText = response.text; // 👈 이 부분을 수정하세요.
+
+    // 3. Flutter에 응답 전송
+    return res.json({
+        response: aiResponseText,
+    });
+
+  } catch (e) {
+    console.error('❌ AI chat proxy error:', e);
+    // 500 에러 처리: AI 키 오류, 네트워크 문제, 또는 모델 자체 오류를 사용자에게 전달합니다.
+    return res.status(500).json({ response: 'AI 서비스 통신 중 심각한 오류가 발생했습니다. 키 설정, API 권한, 또는 네트워크 상태를 확인해주세요.' });
+  }
+});
+// ⭐️ [GET] /api/chat-history: 사용자 AI 채팅 기록 로드
+app.get('/api/chat-history', auth, onlyUser, async (req, res) => {
+  try {
+    const userId = oid(req.jwt.uid);
+
+    // timestamp 내림차순 정렬 (가장 최근이 먼저)
+    const messages = await AiChatMessage.find({ userId })
+      .sort({ timestamp: 1 }) // ⭐️ [중요] 오래된 것부터 로드해야 Flutter의 List에 순서대로 추가됨
+      .lean();
+
+    // Flutter의 ChatMessage 모델에 맞게 데이터 가공
+    const data = messages.map(m => ({
+      // MongoDB의 _id가 아니라 Flutter ChatMessage의 필드에 맞춥니다.
+      // Flutter의 ChatMessage는 isUser를 필수로 받습니다.
+      isUser: m.senderRole === 'USER',
+      text: m.text,
+      timestamp: m.timestamp.toISOString(),
+      chartType: m.chartType,
+    }));
+
+    return res.json(data);
+  } catch (e) {
+    console.error('❌ GET /api/chat-history error:', e);
+    return res.status(500).json({ message: 'Server error loading chat history' });
+  }
+});
+
+// ⭐️ [POST] /api/chat-history: 사용자 AI 채팅 기록 저장
+app.post('/api/chat-history', auth, onlyUser, async (req, res) => {
+  try {
+    const userId = oid(req.jwt.uid);
+    const { isUser, text, timestamp, chartType } = req.body || {};
+
+    if (typeof isUser !== 'boolean' || !text || !timestamp) {
+      return res.status(400).json({ message: 'isUser, text, timestamp are required' });
+    }
+
+    const senderRole = isUser ? 'USER' : 'ASSISTANT';
+
+    const doc = await AiChatMessage.create({
+      userId,
+      senderRole,
+      text: String(text).trim(),
+      timestamp: new Date(timestamp), // ISO 문자열을 Date 객체로 변환
+      ...(chartType && { chartType: String(chartType) }),
+    });
+
+    return res.status(201).json({ id: doc._id, ok: true });
+
+  } catch (e) {
+    console.error('❌ POST /api/chat-history error:', e);
+    return res.status(500).json({ message: 'Server error saving chat message' });
+  }
+});
+
+
 
 app.put('/hospital/profile', auth, onlyHospitalAdmin, async (req, res) => {
   const { hospitalName, photoUrl, intro, address, hours, phone } = req.body || {};
@@ -2070,15 +2194,12 @@ app.post('/users/me/health-record', auth, onlyUser, async (req, res) => {
     const userId = req.jwt.uid;
     const { date, weight, activity, intake } = req.body;
 
-    if (!date) {
-      return res.status(400).json({ message: '날짜는 필수입니다.' });
-    }
-    console.log(`✅ 건강 기록 추가 요청 (사용자: ${userId}):`, req.body);
+    if (!date) return res.status(400).json({ message: '날짜는 필수입니다.' });
+
+    console.log(`✅ 건강 기록 요청:`, date); // 이제 UTC 시간(Z)으로 찍힐 겁니다.
 
     const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
-    }
+    if (!user) return res.status(404).json({ message: 'User not found' });
 
     if (!user.petProfile) user.petProfile = {};
     if (!user.petProfile.healthChart) {
@@ -2087,49 +2208,65 @@ app.post('/users/me/health-record', auth, onlyUser, async (req, res) => {
 
     const recordDate = new Date(date);
 
-    // 1. 체중 데이터 처리
+    // 🚀 [정석 비교] 밀리초(ms)만 떼고 '초' 단위까지만 같으면 같은 걸로 인정!
+    // (앱에서 toUtc()로 보내주므로 이제 시차 계산 필요 없음)
+    const isSameTime = (d1, d2) => {
+      const t1 = new Date(d1);
+      const t2 = new Date(d2);
+      t1.setMilliseconds(0);
+      t2.setMilliseconds(0);
+      return t1.getTime() === t2.getTime();
+    };
+
+    // 1. 체중
     if (weight && typeof weight.bodyWeight === 'number') {
-      const weightRecord = {
+      // 같은 시간대 기록 삭제 (덮어쓰기)
+      user.petProfile.healthChart.weight = user.petProfile.healthChart.weight.filter(
+        (r) => !isSameTime(r.date, recordDate)
+      );
+      user.petProfile.healthChart.weight.push({
         date: recordDate,
         bodyWeight: weight.bodyWeight,
-        // ✅ 나머지 상세 데이터도 null/undefined가 아닐 경우에만 추가
         ...(typeof weight.muscleMass === 'number' && { muscleMass: weight.muscleMass }),
         ...(typeof weight.bodyFatMass === 'number' && { bodyFatMass: weight.bodyFatMass }),
-      };
-      user.petProfile.healthChart.weight.push(weightRecord);
+      });
+      user.petProfile.healthChart.weight.sort((a, b) => new Date(a.date) - new Date(b.date));
     }
 
-    // 2. 활동량 데이터 처리
+    // 2. 활동
     if (activity && typeof activity.time === 'number') {
-      const activityRecord = {
+      user.petProfile.healthChart.activity = user.petProfile.healthChart.activity.filter(
+        (r) => !isSameTime(r.date, recordDate)
+      );
+      user.petProfile.healthChart.activity.push({
         date: recordDate,
         time: activity.time,
         ...(typeof activity.calories === 'number' && { calories: activity.calories }),
-      };
-      user.petProfile.healthChart.activity.push(activityRecord);
+      });
+      user.petProfile.healthChart.activity.sort((a, b) => new Date(a.date) - new Date(b.date));
     }
 
-    // 3. 섭취량 데이터 처리
+    // 3. 섭취
     if (intake && typeof intake.food === 'number') {
-      const intakeRecord = {
+      user.petProfile.healthChart.intake = user.petProfile.healthChart.intake.filter(
+        (r) => !isSameTime(r.date, recordDate)
+      );
+      user.petProfile.healthChart.intake.push({
         date: recordDate,
         food: intake.food,
         ...(typeof intake.water === 'number' && { water: intake.water }),
-      };
-      user.petProfile.healthChart.intake.push(intakeRecord);
+      });
+      user.petProfile.healthChart.intake.sort((a, b) => new Date(a.date) - new Date(b.date));
     }
 
     await user.save();
-
-    console.log('💾 건강 기록이 DB에 저장되었습니다.');
     return res.status(200).json({ petProfile: user.petProfile });
 
   } catch (error) {
-    console.error('❌ 건강 기록 저장 중 오류:', error);
-    return res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+    console.error('Server Error:', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
-
 
 app.delete('/users/health-record', auth, onlyUser, async (req, res) => {
   try {
@@ -2184,13 +2321,18 @@ app.get('/diaries', auth, onlyUser, async (req, res) => {
 });
 
 // [POST] 새 일기 작성 (이미지 업로드는 multipart/form-data, 키: image)
-app.post('/diaries', auth, onlyUser, upload.single('image'), async (req, res) => {
+app.post('/diaries', auth, onlyUser, upload.array('images', 5), async (req, res) => {
   try {
     const user = await User.findById(req.jwt.uid);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     const { title, content, date } = req.body;
-    const imagePath = req.file ? req.file.path : '';
+
+    // ✅ 여러 장의 파일 경로를 URL로 변환하여 배열에 담기
+    // publicUrl 함수는 이미 server.js 상단에 정의되어 있음
+    const imageUrls = (req.files || []).map(f =>
+      publicUrl(req, `/uploads/pet-care/${path.basename(f.path)}`)
+    );
 
     if (!user.petProfile) user.petProfile = {};
     if (!user.petProfile.diaries) user.petProfile.diaries = [];
@@ -2199,7 +2341,7 @@ app.post('/diaries', auth, onlyUser, upload.single('image'), async (req, res) =>
       title: (title || '').toString(),
       content: (content || '').toString(),
       date: new Date(date),
-      imagePath,
+      images: imageUrls, // ✅ imagePath 대신 images 배열 저장
     };
 
     user.petProfile.diaries.push(newDiary);
