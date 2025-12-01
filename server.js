@@ -1237,8 +1237,13 @@ app.put('/users/me/pet', auth, onlyUser, async (req, res) => {
 });
 
 // ------ 새로 추가한거 * 세찬
+// ⭐️ [POST] /api/ai-chat: 프록시
 app.post('/api/ai-chat', auth, onlyUser, async (req, res) => {
+  // 🔥 요청 로그
   console.log('✅ HIT /api/ai-chat');
+  console.log('   ↳ userId =', req.jwt?.uid);
+  console.log('   ↳ body.messages =', Array.isArray(req.body?.messages) ? req.body.messages.length : 'no messages');
+
   try {
     const userId = req.jwt.uid;
     const { messages } = req.body;
@@ -1250,30 +1255,32 @@ app.post('/api/ai-chat', auth, onlyUser, async (req, res) => {
 
     // 새로추가 및 편집
     const geminiMessages = messages.map(m => {
-        // Flutter에서 System Prompt를 'system' role로 보냈지만,
-        // Gemini는 'user'와 'model'만 인식하므로 역할을 명확히 분리합니다.
+      // Flutter에서 System Prompt를 'system' role로 보냈지만,
+      // Gemini는 'user'와 'model'만 인식하므로 역할을 명확히 분리합니다.
 
-        // ⭐️ [수정] System/User 메시지는 'user' role로, Assistant/Model 응답은 'model'로 매핑
-        const role = (m.role === 'model' || m.role === 'assistant') ? 'model' : 'user';
+      // ⭐️ [수정] System/User 메시지는 'user' role로, Assistant/Model 응답은 'model'로 매핑
+      const role = (m.role === 'model' || m.role === 'assistant') ? 'model' : 'user';
 
-        return {
-            role: role,
-            parts: [{ text: m.content }]
-        };
+      return {
+        role: role,
+        parts: [{ text: m.content }]
+      };
     });
 
     const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash', // 또는 'gemini-2.5-pro'
-        contents: geminiMessages,
+      model: 'gemini-2.5-flash', // 또는 'gemini-2.5-pro'
+      contents: geminiMessages,
     });
 
     // 2. AI 응답 추출
     // ⭐️ [수정] .text() 함수 호출을 제거하고 .text 속성을 직접 사용합니다.
     const aiResponseText = response.text; // 👈 이 부분을 수정하세요.
 
+    console.log('✅ /api/ai-chat 응답 생성 성공, length =', aiResponseText?.length ?? 0);
+
     // 3. Flutter에 응답 전송
     return res.json({
-        response: aiResponseText,
+      response: aiResponseText,
     });
 
   } catch (e) {
@@ -1282,8 +1289,14 @@ app.post('/api/ai-chat', auth, onlyUser, async (req, res) => {
     return res.status(500).json({ response: 'AI 서비스 통신 중 심각한 오류가 발생했습니다. 키 설정, API 권한, 또는 네트워크 상태를 확인해주세요.' });
   }
 });
+
+
 // ⭐️ [GET] /api/chat-history: 사용자 AI 채팅 기록 로드
 app.get('/api/chat-history', auth, onlyUser, async (req, res) => {
+  // 🔥 요청 로그
+  console.log('📥 HIT GET /api/chat-history');
+  console.log('   ↳ userId =', req.jwt?.uid);
+
   try {
     const userId = oid(req.jwt.uid);
 
@@ -1291,6 +1304,8 @@ app.get('/api/chat-history', auth, onlyUser, async (req, res) => {
     const messages = await AiChatMessage.find({ userId })
       .sort({ timestamp: 1 }) // ⭐️ [중요] 오래된 것부터 로드해야 Flutter의 List에 순서대로 추가됨
       .lean();
+
+    console.log('📥 /api/chat-history DB result count =', messages.length);
 
     // Flutter의 ChatMessage 모델에 맞게 데이터 가공
     const data = messages.map(m => ({
@@ -1309,13 +1324,20 @@ app.get('/api/chat-history', auth, onlyUser, async (req, res) => {
   }
 });
 
+
 // ⭐️ [POST] /api/chat-history: 사용자 AI 채팅 기록 저장
 app.post('/api/chat-history', auth, onlyUser, async (req, res) => {
+  // 🔥 요청 로그
+  console.log('💾 HIT POST /api/chat-history');
+  console.log('   ↳ userId =', req.jwt?.uid);
+  console.log('   ↳ body =', req.body);
+
   try {
     const userId = oid(req.jwt.uid);
     const { isUser, text, timestamp, chartType } = req.body || {};
 
     if (typeof isUser !== 'boolean' || !text || !timestamp) {
+      console.log('⚠️ /api/chat-history 잘못된 요청:', { isUser, text, timestamp });
       return res.status(400).json({ message: 'isUser, text, timestamp are required' });
     }
 
@@ -1329,6 +1351,8 @@ app.post('/api/chat-history', auth, onlyUser, async (req, res) => {
       ...(chartType && { chartType: String(chartType) }),
     });
 
+    console.log('💾 /api/chat-history 저장 완료, _id =', doc._id.toString());
+
     return res.status(201).json({ id: doc._id, ok: true });
 
   } catch (e) {
@@ -1336,6 +1360,7 @@ app.post('/api/chat-history', auth, onlyUser, async (req, res) => {
     return res.status(500).json({ message: 'Server error saving chat message' });
   }
 });
+
 
 
 
