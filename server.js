@@ -1123,6 +1123,39 @@ app.get("/orders", async (req, res) => {
   }
 });
 
+// ===============================================
+// 🔥 관리자용 전체 사용자 + 반려동물 + 병원 연동 정보 조회
+// ===============================================
+app.get("/admin/users", async (req, res) => {
+  try {
+    const users = await userConn.collection("users").find().toArray();
+
+    const result = [];
+
+    for (const u of users) {
+      const pet = await userConn.collection("pets").findOne({ ownerId: u._id.toString() });
+
+      result.push({
+        id: u._id.toString(),
+        name: u.name,
+        birth: u.birth ?? null,
+        username: u.username,
+        hospital: u.hospitalName ?? null,
+        petName: pet?.name ?? null,
+        petAge: pet?.age ?? null,
+        petSpecies: pet?.species ?? null,
+        petGender: pet?.gender ?? null,
+      });
+    }
+
+    res.json(result);
+
+  } catch (err) {
+    console.error("❌ 관리자 사용자 조회 오류:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 
 // ─────────────── 헬스 & 루트 ───────────────
 // ────────────────────────────────────────────────────────────
