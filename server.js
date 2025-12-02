@@ -1130,31 +1130,68 @@ app.get("/admin/users", async (req, res) => {
   try {
     const users = await userConn.collection("users").find().toArray();
 
-    const result = [];
+    const result = users.map(u => {
+      // 병원 연동 상태 중 APPROVED 된 병원만 선택
+      const approvedHospital = (u.linkedHospitals || []).find(h => h.status === "APPROVED");
 
-    for (const u of users) {
-      const pet = await userConn.collection("pets").findOne({ ownerId: u._id.toString() });
-
-      result.push({
+      return {
         id: u._id.toString(),
         name: u.name,
-        birth: u.birth ?? null,
-        username: u.username,
-        hospital: u.hospitalName ?? null,
-        petName: pet?.name ?? null,
-        petAge: pet?.age ?? null,
-        petSpecies: pet?.species ?? null,
-        petGender: pet?.gender ?? null,
-      });
-    }
+        birth: u.birthDate ?? null,
+        username: u.email,   // Flutter에 표시되는 login ID = email
+
+        // 🐶 반려동물 정보
+        petName: u.petProfile?.name ?? null,
+        petAge: u.petProfile?.age ?? null,
+        petGender: u.petProfile?.gender ?? null,
+        petSpecies: u.petProfile?.species ?? null,
+
+        // 🏥 병원 연동
+        hospital: approvedHospital?.hospitalName ?? null,
+      };
+    });
 
     res.json(result);
-
   } catch (err) {
     console.error("❌ 관리자 사용자 조회 오류:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
+
+app.get("/admin/users/:id", async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    const u = await userConn.collection("users").findOne({
+      _id: new ObjectId(userId)
+    });
+
+    if (!u) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const approvedHospital = (u.linkedHospitals || []).find(h => h.status === "APPROVED");
+
+    res.json({
+      id: u._id.toString(),
+      name: u.name,
+      birth: u.birthDate ?? null,
+      username: u.email,
+
+      petName: u.petProfile?.name ?? null,
+      petAge: u.petProfile?.age ?? null,
+      petGender: u.petProfile?.gender ?? null,
+      petSpecies: u.petProfile?.species ?? null,
+
+      hospital: approvedHospital?.hospitalName ?? null,
+    });
+
+  } catch (err) {
+    console.error("❌ 개별 사용자 조회 오류:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 
 
 // ─────────────── 헬스 & 루트 ───────────────
