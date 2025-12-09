@@ -429,6 +429,21 @@ const PetProfileSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// ✅ 새로추가 *세찬* 지도 장소 저장용 서브 스키마
+const savedPlaceSchema = new mongoose.Schema({
+  place_name:        { type: String, required: true }, // 가게 이름 (ID 역할)
+  category_name:     { type: String, default: '' },
+  phone:             { type: String, default: '' },
+  road_address_name: { type: String, default: '' }, // 도로명 주소
+  address_name:      { type: String, default: '' }, // 지번 주소
+  x:                 { type: String, default: '' }, // 경도
+  y:                 { type: String, default: '' }, // 위도
+  place_url:         { type: String, default: '' }, // 카카오 맵 링크
+  thumbnail:         { type: String, default: '' }, // 이미지 URL
+}, { _id: false }); // 서브 문서라 별도의 _id는 필요 없음
+
+
+
 const userSchema = new mongoose.Schema({
   email:        { type: String, required: true, unique: true, index: true },
   passwordHash: { type: String, required: true },
@@ -437,6 +452,9 @@ const userSchema = new mongoose.Schema({
   birthDate:    { type: String, default: '' },
 
   petProfile:   { type: PetProfileSchema, default: {} },
+
+// ✅ [추가] 2. 유저 스키마 안에 '즐겨찾기 목록' 필드 추가
+  savedPlaces:  { type: [savedPlaceSchema], default: [] },
 
   linkedHospitals: [{
     hospitalId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
@@ -1360,6 +1378,73 @@ app.post('/api/ai-chat', auth, onlyUser, async (req, res) => {
   }
 });
 
+
+// 1. 내 즐겨찾기 목록 가져오기 새로추가 *세찬*
+app.get('/api/users/me/saved-places', auth, onlyUser, async (req, res) => {
+  try {
+    // DB에서 내 정보 중 'savedPlaces' 필드만 쏙 뽑아옴
+    const user = await User.findById(req.jwt.uid).select('savedPlaces').lean();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    res.json({ data: user.savedPlaces || [] });
+  } catch (e) {
+    console.error('GET saved-places error:', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// 2. 장소 저장 (추가) 새로추가 *세찬*
+app.post('/api/users/me/saved-places', auth, onlyUser, async (req, res) => {
+  try {
+    const place = req.body; // Flutter에서 보낸 장소 데이터
+    if (!place || !place.place_name) {
+      return res.status(400).json({ message: 'place_name is required' });
+    }
+
+    const userId = req.jwt.uid;
+
+    // 이미 저장했는지 확인 (중복 저장 방지)
+    const user = await User.findOne({
+      _id: userId,
+      'savedPlaces.place_name': place.place_name
+    });
+
+    if (user) {
+      return res.status(409).json({ message: 'Already saved' });
+    }
+
+    // 배열에 '밀어넣기' ($push)
+    await User.updateOne(
+      { _id: userId },
+      { $push: { savedPlaces: place } }
+    );
+
+    res.status(201).json({ ok: true });
+  } catch (e) {
+    console.error('POST saved-places error:', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// 3. 장소 삭제 (취소) 새로추가 *세찬*
+app.delete('/api/users/me/saved-places/:placeName', auth, onlyUser, async (req, res) => {
+  try {
+    // URL에 한글이 섞여있을 수 있으니 디코딩
+    const placeName = decodeURIComponent(req.params.placeName);
+    const userId = req.jwt.uid;
+
+    // 배열에서 '빼내기' ($pull)
+    await User.updateOne(
+      { _id: userId },
+      { $pull: { savedPlaces: { place_name: placeName } } }
+    );
+
+    res.status(200).json({ ok: true });
+  } catch (e) {
+    console.error('DELETE saved-places error:', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 // ⭐️ [GET] /api/chat-history: 사용자 AI 채팅 기록 로드
 app.get('/api/chat-history', auth, onlyUser, async (req, res) => {
@@ -2814,6 +2899,27 @@ app.post('/api/hospitals/:hospitalId/chat/send', auth, onlyUser, async (req, res
   }
 });
 
+// 유저용: 채팅 미읽음 개수
+app.get('/api/hospitals/:hospitalId/chat/unread-count', auth, onlyUser, async (req, res) => {
+  try {
+    const hid = oid(req.params.hospitalId);
+    const uid = oid(req.jwt.uid);
+
+    const count = await ChatMessage.countDocuments({
+      hospitalId: hid,
+      userId: uid,
+      senderRole: 'ADMIN',    // 병원이 보낸 메시지
+      readByUser: false,      // 아직 유저가 안 읽은 것
+    });
+
+    res.json({ count });
+  } catch (e) {
+    console.error('GET user chat unread-count error:', e);
+    res.status(500).json({ message: 'server error' });
+  }
+});
+
+
 // 읽음 처리(사용자가 채팅방 열었을 때)
 app.post('/api/hospitals/:hospitalId/chat/read-all', auth, onlyUser, async (req, res) => {
   try {
@@ -2833,34 +2939,44 @@ app.delete('/api/hospital-admin/pet-care/:id', auth, onlyHospitalAdmin, async (r
   try {
     const { id } = req.params;
 
-    // 1) 삭제 대상 가져오기 + 병원 소속 검증
-    //    patient 테이블 join 없이, care 문서에 patientId가 있고 Patient에 hospitalId가 매칭되는 구조라면 아래처럼 확인:
-    const care = await PetCareAdmin.findById(id).lean();
-    if (!care) return res.status(404).json({ message: 'care not found' });
+    // 0) ObjectId 유효성 체크 (이상한 id 들어오면 바로 400)
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'invalid id' });
+    }
 
-    // 필수: 이 케어의 환자가 이 병원 소속인지 확인
-    const patient = await AdminConn.model('Patient')
-      .findOne({ _id: care.patientId, hospitalId: req.jwt.uid })
-      .select('_id')
+    // 1) 이 병원 소속 케어 문서만 찾아오기
+    //    ⚠ PetCareAdmin 스키마에 hospitalId 가 있다고 가정
+    const care = await PetCareAdmin
+      .findOne({ _id: id, hospitalId: req.jwt.uid })
       .lean();
-    if (!patient) return res.status(403).json({ message: 'forbidden: not your patient' });
 
-    // 2) 파일 삭제 (images 배열/단일 imageUrl 모두 대응)
+    if (!care) {
+      // 없거나, 이 병원 소속이 아닌 경우
+      return res.status(404).json({ message: 'care not found' });
+    }
+
+    // 2) 첨부 파일 URL들 수집 후 삭제
     const urls = [];
-    if (Array.isArray(care.images)) urls.push(...care.images.filter(Boolean));
-    if (care.imageUrl) urls.push(care.imageUrl);
-    await deleteFilesByUrls(urls);
+    if (Array.isArray(care.images)) {
+      urls.push(...care.images.filter(Boolean));
+    }
+    if (care.imageUrl) {
+      urls.push(care.imageUrl);
+    }
+
+    if (urls.length > 0) {
+      await deleteFilesByUrls(urls);
+    }
 
     // 3) admin_db에서 문서 삭제
     await PetCareAdmin.deleteOne({ _id: id });
 
-    // 4) user_db 미러 삭제 (최대한 동일 _id 사용 가정)
+    // 4) user_db 미러 삭제 (있으면 삭제, 실패해도 전체 요청은 성공 처리)
     try {
       await PetCareUser.deleteOne({ _id: id });
-      // 만약 다른 키로 매핑했다면 예: await PetCareUser.deleteOne({ hospitalCareId: id });
+      // 스키마가 다르면 예: await PetCareUser.deleteOne({ hospitalCareId: id });
     } catch (e) {
       console.warn('user_db mirror delete failed:', e.message);
-      // 실패해도 200은 보냄(최선 수행). 필요 시 보상 큐 구성 가능.
     }
 
     return res.json({ ok: true });
@@ -2869,6 +2985,7 @@ app.delete('/api/hospital-admin/pet-care/:id', auth, onlyHospitalAdmin, async (r
     return res.status(500).json({ message: 'internal error' });
   }
 });
+
 
 
 app.delete('/api/users/me/appointments/:id', auth, onlyUser, async (req, res) => {
