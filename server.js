@@ -17,6 +17,10 @@ const rateLimit  = require('express-rate-limit');
 // ---- 새로추가
 const { GoogleGenAI } = require('@google/genai');
 
+const genAI = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
+
 const MONGODB_URI = process.env.MONGODB_URI;
 const PORT        = process.env.PORT || 4000;
 const JWT_SECRET  = process.env.JWT_SECRET;
@@ -1325,56 +1329,46 @@ app.put('/users/me/pet', auth, onlyUser, async (req, res) => {
 });
 
 // ------ 새로 추가한거 * 세찬
-// ⭐️ [POST] /api/ai-chat: 프록시
+// ⭐️ [POST] /api/ai-chat
 app.post('/api/ai-chat', auth, onlyUser, async (req, res) => {
-  // 🔥 요청 로그
   console.log('✅ HIT /api/ai-chat');
   console.log('   ↳ userId =', req.jwt?.uid);
-  console.log('   ↳ body.messages =', Array.isArray(req.body?.messages) ? req.body.messages.length : 'no messages');
+  console.log(
+    '   ↳ body.messages =',
+    Array.isArray(req.body?.messages) ? req.body.messages.length : 'no messages'
+  );
 
   try {
-    const userId = req.jwt.uid;
     const { messages } = req.body;
 
-    // ... (사용자 조회 코드 생략) ...
-
-    // ⭐️ 중요: 여기서부터 실제 AI 호출
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-    // 새로추가 및 편집
-    const geminiMessages = messages.map(m => {
-      // Flutter에서 System Prompt를 'system' role로 보냈지만,
-      // Gemini는 'user'와 'model'만 인식하므로 역할을 명확히 분리합니다.
-
-      // ⭐️ [수정] System/User 메시지는 'user' role로, Assistant/Model 응답은 'model'로 매핑
+    const geminiMessages = (messages || []).map(m => {
       const role = (m.role === 'model' || m.role === 'assistant') ? 'model' : 'user';
-
       return {
-        role: role,
-        parts: [{ text: m.content }]
+        role,
+        parts: [{ text: m.content || '' }],
       };
     });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash', // 또는 'gemini-2.5-pro'
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+    const result = await model.generateContent({
       contents: geminiMessages,
     });
 
-    // 2. AI 응답 추출
-    // ⭐️ [수정] .text() 함수 호출을 제거하고 .text 속성을 직접 사용합니다.
-    const aiResponseText = response.text; // 👈 이 부분을 수정하세요.
+    const aiResponseText = result.response.text();   // ✅ 응답 텍스트 추출
 
-    console.log('✅ /api/ai-chat 응답 생성 성공, length =', aiResponseText?.length ?? 0);
+    console.log(
+      '✅ /api/ai-chat 응답 생성 성공, length =',
+      aiResponseText?.length ?? 0
+    );
 
-    // 3. Flutter에 응답 전송
-    return res.json({
-      response: aiResponseText,
-    });
-
+    return res.json({ response: aiResponseText });
   } catch (e) {
     console.error('❌ AI chat proxy error:', e);
-    // 500 에러 처리: AI 키 오류, 네트워크 문제, 또는 모델 자체 오류를 사용자에게 전달합니다.
-    return res.status(500).json({ response: 'AI 서비스 통신 중 심각한 오류가 발생했습니다. 키 설정, API 권한, 또는 네트워크 상태를 확인해주세요.' });
+    return res.status(500).json({
+      response:
+        'AI 서비스 통신 중 심각한 오류가 발생했습니다. 키 설정, API 권한, 또는 네트워크 상태를 확인해주세요.',
+    });
   }
 });
 
